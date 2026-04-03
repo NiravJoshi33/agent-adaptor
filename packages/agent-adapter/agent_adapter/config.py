@@ -83,6 +83,36 @@ def update_wallet_config(
     return _write_config(p, config)
 
 
+def add_driver_config(path: str | Path, driver_entry: dict[str, Any]) -> dict[str, Any]:
+    """Append a driver config entry if it is not already present."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config not found: {p}")
+    config = _load_raw_config(p)
+    drivers = config.setdefault("drivers", [])
+    if driver_entry in drivers:
+        return config
+    drivers.append(driver_entry)
+    return _write_config(p, config)
+
+
+def remove_driver_config(path: str | Path, index: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove a driver config entry by zero-based index."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config not found: {p}")
+    config = _load_raw_config(p)
+    drivers = config.get("drivers") or []
+    if index < 0 or index >= len(drivers):
+        raise IndexError(index)
+    removed = drivers.pop(index)
+    if drivers:
+        config["drivers"] = drivers
+    else:
+        config.pop("drivers", None)
+    return _write_config(p, config), removed
+
+
 def apply_pricing_overlay(
     registry: Any, pricing_config: dict[str, dict]
 ) -> None:

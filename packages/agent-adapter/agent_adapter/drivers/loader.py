@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 from importlib import import_module
 from typing import Any
 
@@ -10,7 +12,16 @@ from agent_adapter.plugins.discovery import discover_plugins
 
 
 def _load_class(module_name: str, class_name: str) -> type:
-    module = import_module(module_name)
+    module_path = Path(module_name)
+    if module_name.endswith(".py") and module_path.exists():
+        safe_name = f"agent_adapter_dynamic_driver_{abs(hash(str(module_path.resolve())))}"
+        spec = importlib.util.spec_from_file_location(safe_name, module_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load driver module from {module_name}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    else:
+        module = import_module(module_name)
     return getattr(module, class_name)
 
 

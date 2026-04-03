@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +15,9 @@ import yaml
 
 from agent_adapter.management import create_management_app
 from agent_adapter.plugins.discovery import list_all_plugins
+from agent_adapter.plugins.discovery import discover_plugins
 from agent_adapter.runtime import create_runtime
+from agent_adapter.config import add_driver_config, remove_driver_config
 
 
 DEFAULT_SYSTEM_PROMPT = """## Provider Instructions
@@ -92,6 +96,12 @@ def _parser() -> argparse.ArgumentParser:
     drivers = sub.add_parser("drivers")
     drivers_sub = drivers.add_subparsers(dest="drivers_command", required=True)
     drivers_sub.add_parser("list")
+    drivers_install = drivers_sub.add_parser("install")
+    drivers_install.add_argument("source")
+    drivers_install.add_argument("--class-name")
+    drivers_install.add_argument("--plugin-id")
+    drivers_remove = drivers_sub.add_parser("remove")
+    drivers_remove.add_argument("target")
 
     plugins = sub.add_parser("plugins")
     plugins_sub = plugins.add_subparsers(dest="plugins_command", required=True)
@@ -303,6 +313,11 @@ async def _run_metrics_command(args: argparse.Namespace) -> Any:
 
 
 async def _run_drivers_command(args: argparse.Namespace) -> Any:
+    if args.drivers_command == "install":
+        return await _install_driver(args)
+    if args.drivers_command == "remove":
+        return await _remove_driver(args)
+
     runtime = await create_runtime(args.config)
     try:
         if args.drivers_command == "list":
@@ -326,6 +341,98 @@ async def _run_platforms_command(args: argparse.Namespace) -> Any:
         raise ValueError(f"Unknown platforms command: {args.platforms_command}")
     finally:
         await runtime.close()
+
+
+def _discover_driver_class(source: str, explicit_class_name: str | None = None) -> str:
+    from agent_adapter_contracts.drivers import PlatformDriver
+    import importlib.util
+    import inspect
+
+    module_path = Path(source).resolve()
+    spec = importlib.util.spec_from_file_location(
+        f"agent_adapter_install_driver_{abs(hash(str(module_path)))}",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load driver module from {source}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if explicit_class_name:
+        return explicit_class_name
+    matches = [
+        name
+        for name, value in inspect.getmembers(module, inspect.isclass)
+        if issubclass(value, PlatformDriver) and value is not PlatformDriver
+    ]
+    if not matches:
+        raise ValueError(f"No PlatformDriver implementation found in {source}")
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple PlatformDriver implementations found in {source}; pass --class-name"
+        )
+    return matches[0]
+
+
+async def _install_driver(args: argparse.Namespace) -> Any:
+    source = args.source
+    source_path = Path(source)
+    if source_path.exists() and source_path.suffix == ".py":
+        class_name = _discover_driver_class(source, args.class_name)
+        entry = {
+            "module": str(source_path.resolve()),
+            "class_name": class_name,
+            "config": {},
+        }
+        add_driver_config(args.config, entry)
+        return {
+            "installed": True,
+            "mode": "file",
+            "module": entry["module"],
+            "class_name": class_name,
+        }
+
+    before = set(discover_plugins("driver"))
+    env = dict(os.environ)
+    env.setdefault("UV_CACHE_DIR", "/tmp/uv-cache")
+    subprocess.run(
+        ["uv", "pip", "install", source],
+        check=True,
+        env=env,
+    )
+    after = discover_plugins("driver")
+    plugin_id = args.plugin_id
+    if not plugin_id:
+        new_ids = sorted(set(after) - before)
+        if len(new_ids) == 1:
+            plugin_id = new_ids[0]
+        elif len(new_ids) == 0 and source in after:
+            plugin_id = source
+        else:
+            raise ValueError(
+                "Could not determine installed driver plugin id automatically; pass --plugin-id"
+            )
+    if plugin_id not in after:
+        raise ValueError(f'Installed driver plugin "{plugin_id}" was not discovered')
+    add_driver_config(args.config, {"id": plugin_id})
+    return {
+        "installed": True,
+        "mode": "plugin",
+        "plugin_id": plugin_id,
+        "source": source,
+    }
+
+
+async def _remove_driver(args: argparse.Namespace) -> Any:
+    try:
+        index = int(args.target) - 1
+    except ValueError as exc:
+        raise ValueError("drivers remove expects a 1-based config index") from exc
+    _, removed = remove_driver_config(args.config, index)
+    return {
+        "removed": True,
+        "index": index + 1,
+        "driver": removed,
+    }
 
 
 def _run_plugins_command(args: argparse.Namespace) -> Any:

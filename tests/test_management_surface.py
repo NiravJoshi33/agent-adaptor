@@ -496,6 +496,83 @@ class CLITests(unittest.TestCase):
             self.assertEqual(payload["drivers"][0]["name"], "dummy-driver")
             self.assertEqual(payload["drivers"][0]["namespace"], "drv_dummy")
 
+    def test_cli_drivers_install_and_remove_support_local_driver_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "openapi.yaml"
+            config_path = root / "agent-adapter.yaml"
+            driver_path = root / "file_driver.py"
+            _write_openapi_spec(spec_path)
+            _write_config(config_path, spec_path)
+            driver_path.write_text(
+                """
+from agent_adapter_contracts.drivers import PlatformDriver
+from agent_adapter_contracts.types import ToolDefinition
+
+
+class FileDriver(PlatformDriver):
+    @property
+    def name(self) -> str:
+        return "file-driver"
+
+    @property
+    def namespace(self) -> str:
+        return "drv_file"
+
+    @property
+    def tools(self) -> list[ToolDefinition]:
+        return [
+            ToolDefinition(
+                name="drv_file__register",
+                description="Register the runtime with a file-backed driver.",
+                input_schema={"type": "object", "properties": {}, "required": []},
+            )
+        ]
+
+    async def initialize(self, runtime) -> None:
+        self.runtime = runtime
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def execute(self, tool_name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"ok": True, "tool": tool_name}
+"""
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "drivers",
+                        "install",
+                        str(driver_path),
+                    ]
+                )
+            installed = json.loads(stdout.getvalue())
+            self.assertTrue(installed["installed"])
+            self.assertEqual(installed["mode"], "file")
+            self.assertEqual(installed["class_name"], "FileDriver")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "drivers", "list"])
+            listed = json.loads(stdout.getvalue())
+            self.assertEqual(listed["drivers"][0]["name"], "file-driver")
+            self.assertEqual(listed["drivers"][0]["tools"], ["drv_file__register"])
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "drivers", "remove", "1"])
+            removed = json.loads(stdout.getvalue())
+            self.assertTrue(removed["removed"])
+            self.assertEqual(removed["index"], 1)
+
+            config = yaml.safe_load(config_path.read_text())
+            self.assertNotIn("drivers", config)
+
 
 class TestExtension:
     def __init__(self) -> None:
