@@ -1,0 +1,40 @@
+adapter:
+  name: "weatherpro-agent"
+  dataDir: "./simulation/data"
+
+wallet:
+  provider: "ows"
+  config:
+    wallet_name: "weatherpro-demo"
+    chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+    rpc_url: "http://127.0.0.1:8899"
+
+agent:
+  model: "openai/gpt-oss-120b"
+  base_url: "https://openrouter.ai/api/v1"
+  # apiKey loaded from OPENROUTER_API_KEY env var
+
+capabilities:
+  source:
+    type: "openapi"
+    url: "http://127.0.0.1:8001/openapi.json"
+  pricing:
+    get_current_weather:
+      model: per_call
+      amount: 0.01
+      enabled: true
+    get_weather_forecast:
+      model: per_call
+      amount: 0.02
+      enabled: true
+    lookup_location:
+      model: per_call
+      amount: 0.005
+      enabled: true
+
+payments:
+  - id: "free"
+    type: "free"
+
+platform:
+  url: "http://127.0.0.1:8002"

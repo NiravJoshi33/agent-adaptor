@@ -5,8 +5,9 @@ description = "x402 HTTP-native payment adapter for Agent Adapter"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "agent-adapter-contracts",
-    "x402>=2.6",
     "httpx>=0.28",
+    "solders>=0.26",
+    "solana>=0.36",
 ]
 
 [tool.uv.sources]

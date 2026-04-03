@@ -9,6 +9,8 @@ dependencies = [
     "httpx>=0.28",
     "pyyaml>=6.0",
     "openai>=1.70",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
     "cryptography>=44.0",
 ]
 

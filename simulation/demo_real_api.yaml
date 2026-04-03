@@ -1,0 +1,57 @@
+adapter:
+  name: "multi-api-agent"
+  dataDir: "./simulation/data"
+
+wallet:
+  provider: "ows"
+  config:
+    wallet_name: "demo-real-api"
+    chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+    rpc_url: "http://127.0.0.1:8899"
+
+agent:
+  model: "openai/gpt-oss-120b"
+  base_url: "https://openrouter.ai/api/v1"
+
+capabilities:
+  sources:
+    - type: "openapi"
+      url: "https://date.nager.at/openapi/v3.json"
+      base_url: "https://date.nager.at"
+    - type: "openapi"
+      url: "https://raw.githubusercontent.com/open-meteo/open-meteo/main/openapi.yml"
+      base_url: "https://api.open-meteo.com"
+  pricing:
+    # Nager.Date — holiday capabilities
+    get__api_v3_PublicHolidays_{year}_{countryCode}:
+      model: per_call
+      amount: 0.005
+      enabled: true
+    get__api_v3_NextPublicHolidays_{countryCode}:
+      model: per_call
+      amount: 0.005
+      enabled: true
+    get__api_v3_LongWeekend_{year}_{countryCode}:
+      model: per_call
+      amount: 0.005
+      enabled: true
+    get__api_v3_CountryInfo_{countryCode}:
+      model: per_call
+      amount: 0.003
+      enabled: true
+    get__api_v3_NextPublicHolidaysWorldwide:
+      model: per_call
+      amount: 0.005
+      enabled: true
+    # Open-Meteo — weather
+    get__v1_forecast:
+      model: per_call
+      amount: 0.01
+      enabled: true
+
+payments:
+  - id: "free"
+    type: "free"
+
+platform:
+  url: "http://127.0.0.1:8002"

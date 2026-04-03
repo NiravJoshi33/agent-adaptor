@@ -77,10 +77,18 @@ def _extract_output_schema(operation: dict, spec: dict) -> dict:
     return {}
 
 
-def parse_openapi_spec(spec_data: str | bytes) -> list[Capability]:
+def parse_openapi_spec(
+    spec_data: str | bytes, base_url: str = ""
+) -> list[Capability]:
     """Parse an OpenAPI 3.x spec (JSON or YAML) into a list of Capabilities."""
     spec: dict = yaml.safe_load(spec_data)
     capabilities: list[Capability] = []
+
+    # Resolve base_url from spec if not provided
+    if not base_url:
+        servers = spec.get("servers", [])
+        if servers:
+            base_url = servers[0].get("url", "")
 
     for path, path_item in spec.get("paths", {}).items():
         for method in ("get", "post", "put", "patch", "delete"):
@@ -100,6 +108,7 @@ def parse_openapi_spec(spec_data: str | bytes) -> list[Capability]:
                     or operation.get("description", ""),
                     input_schema=_extract_input_schema(operation, spec),
                     output_schema=_extract_output_schema(operation, spec),
+                    base_url=base_url,
                     enabled=False,
                 )
             )
@@ -113,7 +122,9 @@ def spec_hash(spec_data: str | bytes) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-async def fetch_and_parse(url: str) -> tuple[list[Capability], str]:
+async def fetch_and_parse(
+    url: str, base_url: str = ""
+) -> tuple[list[Capability], str]:
     """Fetch an OpenAPI spec from a URL and parse it.
 
     Returns (capabilities, content_hash).
@@ -123,4 +134,4 @@ async def fetch_and_parse(url: str) -> tuple[list[Capability], str]:
         resp.raise_for_status()
 
     raw = resp.text
-    return parse_openapi_spec(raw), spec_hash(raw)
+    return parse_openapi_spec(raw, base_url=base_url), spec_hash(raw)

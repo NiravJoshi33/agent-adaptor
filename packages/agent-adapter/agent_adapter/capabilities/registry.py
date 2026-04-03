@@ -44,10 +44,14 @@ class CapabilityRegistry:
         """Generate cap__* tool definitions for the agent from enabled+priced capabilities."""
         tools = []
         for cap in self.list_priced():
+            desc = cap.description or f"Execute the {cap.name} capability"
+            if cap.base_url and cap.source_ref:
+                desc += f"\nEndpoint: {cap.base_url}{cap.source_ref.split(' ', 1)[-1]}"
+                desc += f"\nMethod: {cap.source_ref.split(' ', 1)[0]}"
             tools.append(
                 ToolDefinition(
                     name=f"cap__{cap.name}",
-                    description=cap.description or f"Execute the {cap.name} capability",
+                    description=desc,
                     input_schema=cap.input_schema,
                 )
             )
