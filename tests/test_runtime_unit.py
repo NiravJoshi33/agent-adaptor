@@ -9,6 +9,7 @@ import unittest
 import base64
 import httpx
 
+from agent_adapter.agent.loop import AgentLoop
 from agent_adapter.capabilities.mcp import MCP_PROTOCOL_VERSION, fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
@@ -158,6 +159,49 @@ class FakeRpcFactory:
     def __call__(self, rpc_url: str) -> FakeRpcClient:
         self.client.rpc_url = rpc_url
         return self.client
+
+
+class FakeAgentMessage:
+    def __init__(self, *, content: str, tool_calls=None) -> None:
+        self.content = content
+        self.tool_calls = tool_calls
+
+    def model_dump(self, exclude_none: bool = True) -> dict[str, object]:
+        payload: dict[str, object] = {"role": "assistant", "content": self.content}
+        if not exclude_none or self.tool_calls is not None:
+            payload["tool_calls"] = self.tool_calls
+        return payload
+
+
+class FakeAgentChoice:
+    def __init__(self, message: FakeAgentMessage) -> None:
+        self.message = message
+
+
+class FakeAgentResponse:
+    def __init__(self, *, content: str, usage: dict[str, int]) -> None:
+        self.choices = [FakeAgentChoice(FakeAgentMessage(content=content))]
+        self.usage = usage
+
+
+class FakeCompletions:
+    def __init__(self, response: FakeAgentResponse) -> None:
+        self._response = response
+        self.calls: list[dict[str, object]] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._response
+
+
+class FakeChat:
+    def __init__(self, response: FakeAgentResponse) -> None:
+        self.completions = FakeCompletions(response)
+
+
+class FakeOpenAIClient:
+    def __init__(self, response: FakeAgentResponse) -> None:
+        self.chat = FakeChat(response)
 
 
 class OpenAPIParsingTests(unittest.TestCase):
@@ -704,6 +748,33 @@ class EscrowAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(submitted["signature"], rpc_factory.client.confirmed)
         self.assertTrue(status["found"])
         self.assertEqual(status["confirmation_status"], "confirmed")
+
+
+class AgentLoopUsageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_loop_records_usage(self) -> None:
+        recorded: list[dict[str, object]] = []
+        
+        async def record_usage(usage: dict[str, object]) -> None:
+            recorded.append(usage)
+
+        response = FakeAgentResponse(
+            content="done",
+            usage={"prompt_tokens": 120, "completion_tokens": 45, "total_tokens": 165},
+        )
+        client = FakeOpenAIClient(response)
+        loop = AgentLoop(
+            api_key="test-key",
+            client=client,
+            usage_recorder=record_usage,
+        )
+
+        result = await loop.run_once("hello")
+
+        self.assertEqual(result, "done")
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["prompt_tokens"], 120)
+        self.assertEqual(recorded[0]["completion_tokens"], 45)
+        self.assertEqual(recorded[0]["model"], "openai/gpt-oss-120b")
 
 
 if __name__ == "__main__":

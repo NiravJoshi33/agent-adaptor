@@ -14,6 +14,11 @@ function formatPricing(pricing) {
   return `<span class="price-pill">${pricing.amount} ${pricing.currency} <span class="muted">(${pricing.model})</span></span>`;
 }
 
+function formatMoney(value, currency = "USD") {
+  const amount = Number(value || 0);
+  return `${amount.toFixed(amount >= 100 ? 0 : 3).replace(/\.?0+$/, "")} ${currency}`;
+}
+
 function setActiveNav() {
   const current = window.location.pathname;
   document.querySelectorAll(".nav a").forEach((link) => {
@@ -95,6 +100,128 @@ function renderAgent(status, decisions) {
   }
 }
 
+function renderMetrics(metrics, series) {
+  const completedJobs = document.getElementById("metrics-completed-jobs");
+  if (completedJobs) completedJobs.textContent = `${metrics.completed_jobs || 0}`;
+
+  const revenueTotal = document.getElementById("metrics-revenue-total");
+  if (revenueTotal) {
+    const revenueByCurrency = metrics.revenue_by_currency || {};
+    const text = Object.entries(revenueByCurrency).length
+      ? Object.entries(revenueByCurrency)
+          .map(([currency, value]) => formatMoney(value, currency))
+          .join(" / ")
+      : "0";
+    revenueTotal.textContent = text;
+  }
+
+  const llmCost = document.getElementById("metrics-llm-cost");
+  if (llmCost) {
+    llmCost.textContent = formatMoney(
+      metrics.llm_usage?.estimated_cost || 0,
+      metrics.llm_usage?.currency || "USD",
+    );
+  }
+
+  const margin = document.getElementById("metrics-margin");
+  if (margin) {
+    margin.textContent = formatMoney(
+      metrics.estimated_stable_margin || 0,
+      "USD/USDC",
+    );
+  }
+
+  const timeseries = document.getElementById("metrics-timeseries");
+  if (timeseries) {
+    const maxValue = Math.max(
+      1,
+      ...series.map((point) => Math.max(Number(point.revenue || 0), Number(point.llm_cost || 0))),
+    );
+    timeseries.innerHTML = `
+      <div class="metrics-chart">
+        ${series.map((point) => `
+          <div class="metrics-bar-group">
+            <div class="metrics-bars">
+              <div class="metrics-bar revenue" style="height:${Math.max((Number(point.revenue || 0) / maxValue) * 100, 4)}%"></div>
+              <div class="metrics-bar cost" style="height:${Math.max((Number(point.llm_cost || 0) / maxValue) * 100, 4)}%"></div>
+            </div>
+            <div class="metrics-day">${point.day.slice(5)}</div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="metrics-legend">
+        <span><i class="legend-swatch revenue"></i>Revenue</span>
+        <span><i class="legend-swatch cost"></i>LLM Cost</span>
+      </div>
+    `;
+  }
+
+  const paymentMix = document.getElementById("metrics-payment-mix");
+  if (paymentMix) {
+    const rows = metrics.revenue_by_payment_protocol || [];
+    paymentMix.innerHTML = rows.length
+      ? rows.map((row) => `
+          <div class="metric-row">
+            <div>
+              <strong>${row.payment_protocol}</strong>
+              <div class="muted">${row.jobs} jobs</div>
+            </div>
+            <div class="metric-value">${formatMoney(row.revenue, "USDC")}</div>
+          </div>
+        `).join("")
+      : `<div class="card"><span class="label">Payment Mix</span><strong>No paid jobs yet</strong><p class="card-foot">Once the runtime starts completing paid work, protocol-level revenue will show up here.</p></div>`;
+  }
+
+  const statusBreakdown = document.getElementById("metrics-status-breakdown");
+  if (statusBreakdown) {
+    const rows = Object.entries(metrics.jobs_by_status || {});
+    statusBreakdown.innerHTML = rows.length
+      ? rows.map(([status, count]) => `
+          <div class="metric-row">
+            <div>${badge(status)}</div>
+            <div class="metric-value">${count}</div>
+          </div>
+        `).join("")
+      : `<div class="card"><span class="label">Job Outcomes</span><strong>No jobs recorded</strong><p class="card-foot">Job lifecycle data will appear here as soon as the runtime starts executing work.</p></div>`;
+  }
+
+  const llmUsage = document.getElementById("metrics-llm-usage");
+  if (llmUsage) {
+    const usage = metrics.llm_usage || {};
+    const byModel = usage.by_model || [];
+    llmUsage.innerHTML = `
+      <div class="metrics-stack">
+        <div class="metric-row">
+          <div>
+            <strong>Total Tokens</strong>
+            <div class="muted">${usage.prompt_tokens || 0} prompt / ${usage.completion_tokens || 0} completion</div>
+          </div>
+          <div class="metric-value">${usage.total_tokens || 0}</div>
+        </div>
+        <div class="metric-row">
+          <div>
+            <strong>Average Completed Job</strong>
+            <div class="muted">Completed job revenue in the reporting window</div>
+          </div>
+          <div class="metric-value">${formatMoney(metrics.avg_completed_job_value || 0, "USDC")}</div>
+        </div>
+        <div class="metric-subsection">
+          <div class="label">Model Breakdown</div>
+          ${byModel.length ? byModel.map((row) => `
+            <div class="metric-row compact">
+              <div>
+                <strong>${row.model || "unknown"}</strong>
+                <div class="muted">${row.calls} calls / ${row.total_tokens} tokens</div>
+              </div>
+              <div class="metric-value">${formatMoney(row.estimated_cost, usage.currency || "USD")}</div>
+            </div>
+          `).join("") : `<p class="card-foot">No LLM usage recorded yet.</p>`}
+        </div>
+      </div>
+    `;
+  }
+}
+
 async function postJSON(url) {
   const response = await fetch(url, { method: "POST" });
   return response.json();
@@ -124,6 +251,10 @@ async function init() {
     const resume = document.getElementById("resume-agent");
     if (pause) pause.addEventListener("click", () => postJSON("/manage/agent/pause"));
     if (resume) resume.addEventListener("click", () => postJSON("/manage/agent/resume"));
+  }
+
+  if (data.page === "metrics") {
+    renderMetrics(data.metrics || {}, data.series || []);
   }
 }
 

@@ -61,6 +61,13 @@ def _shell(title: str, body: str, page_data: dict | None = None) -> str:
               <small>Decisions and execution</small>
             </span>
           </a>
+          <a href="/dashboard/metrics">
+            <span class="nav-index">04</span>
+            <span class="nav-copy">
+              <strong>Metrics</strong>
+              <small>Revenue, cost, performance</small>
+            </span>
+          </a>
         </nav>
         <div class="sidebar-footer">
           <div class="eyebrow">Local-First Control</div>
@@ -204,4 +211,79 @@ def mount_dashboard(app: FastAPI, runtime: RuntimeContext) -> None:
             "Agent",
             body,
             {"page": "agent", "status": status, "decisions": decisions},
+        )
+
+    @app.get("/dashboard/metrics", response_class=HTMLResponse, include_in_schema=False)
+    async def dashboard_metrics():
+        metrics = await runtime.get_metrics_summary(30)
+        series = await runtime.get_metrics_timeseries(14)
+        body = """
+        <section class="hero compact">
+          <div class="hero-copy">
+            <div class="eyebrow">Economic Observability</div>
+            <h2>Metrics</h2>
+            <p>Track what the runtime is earning, what the agent is spending on inference, and which payment rails are actually pulling their weight.</p>
+          </div>
+          <div class="hero-meta compact">
+            <div class="hero-callout">
+              <span class="label">Margin Lens</span>
+              <strong>Stable-coin revenue minus estimated LLM burn, visible in one place.</strong>
+            </div>
+          </div>
+        </section>
+        <section class="grid cards metrics-cards">
+          <article class="card">
+            <span class="label">Completed Jobs</span>
+            <strong id="metrics-completed-jobs"></strong>
+            <p class="card-foot">Successful runs in the selected reporting window.</p>
+          </article>
+          <article class="card">
+            <span class="label">Revenue</span>
+            <strong id="metrics-revenue-total"></strong>
+            <p class="card-foot">Completed-job revenue grouped across payment currencies.</p>
+          </article>
+          <article class="card">
+            <span class="label">LLM Cost</span>
+            <strong id="metrics-llm-cost"></strong>
+            <p class="card-foot">Estimated inference spend recorded from actual agent usage.</p>
+          </article>
+          <article class="card">
+            <span class="label">Stable Margin</span>
+            <strong id="metrics-margin"></strong>
+            <p class="card-foot">Revenue in USD/USDC minus estimated LLM cost.</p>
+          </article>
+        </section>
+        <section class="grid metrics-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Daily Revenue vs Cost</h3>
+            </div>
+            <div id="metrics-timeseries"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Payment Mix</h3>
+            </div>
+            <div id="metrics-payment-mix"></div>
+          </article>
+        </section>
+        <section class="grid metrics-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Job Outcomes</h3>
+            </div>
+            <div id="metrics-status-breakdown"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-header">
+              <h3>LLM Usage</h3>
+            </div>
+            <div id="metrics-llm-usage"></div>
+          </article>
+        </section>
+        """
+        return _shell(
+            "Metrics",
+            body,
+            {"page": "metrics", "metrics": metrics, "series": series},
         )

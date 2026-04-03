@@ -85,6 +85,14 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
     async def list_jobs(limit: int = 20):
         return {"jobs": await runtime.list_jobs(limit)}
 
+    @app.get("/manage/metrics")
+    async def get_metrics(days: int = 30):
+        return await runtime.get_metrics_summary(days)
+
+    @app.get("/manage/metrics/timeseries")
+    async def get_metrics_timeseries(days: int = 14):
+        return {"series": await runtime.get_metrics_timeseries(days)}
+
     @app.get("/manage/platforms")
     async def list_platforms():
         return {"platforms": await runtime.list_platforms()}

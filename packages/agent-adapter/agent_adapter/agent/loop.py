@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from openai import AsyncOpenAI
 
@@ -55,12 +55,15 @@ class AgentLoop:
         custom_prompt: str = "",
         max_tool_rounds: int = 20,
         extra_tools: list[ToolDefinition] | None = None,
+        usage_recorder: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        client: Any | None = None,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         self._handlers = handlers
         self._max_tool_rounds = max_tool_rounds
         self._extra_tools = extra_tools or []
+        self._usage_recorder = usage_recorder
 
         prompt = system_prompt
         if custom_prompt:
@@ -91,6 +94,7 @@ class AgentLoop:
                 tools=tools,
                 tool_choice="auto",
             )
+            await self._record_usage(getattr(response, "usage", None))
 
             choice = response.choices[0]
             message = choice.message
@@ -124,3 +128,20 @@ class AgentLoop:
                 )
 
         return "Agent reached maximum tool rounds without completing."
+
+    async def _record_usage(self, usage: Any) -> None:
+        if usage is None or self._usage_recorder is None:
+            return
+        payload = (
+            usage.model_dump()
+            if hasattr(usage, "model_dump")
+            else dict(usage)
+            if isinstance(usage, dict)
+            else {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                "total_tokens": getattr(usage, "total_tokens", 0),
+            }
+        )
+        payload["model"] = self._model
+        await self._usage_recorder(payload)

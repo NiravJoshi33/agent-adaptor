@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -466,6 +467,212 @@ class RuntimeContext:
         self._agent_loop = None
         return await self.get_prompt_settings()
 
+    async def record_llm_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens = int(
+            usage.get("total_tokens", prompt_tokens + completion_tokens)
+            or (prompt_tokens + completion_tokens)
+        )
+        model = str(usage.get("model", ""))
+        cost_cfg = self.config.get("agent", {}).get("costs", {})
+        input_rate = float(cost_cfg.get("input_per_1m_tokens", 0.0) or 0.0)
+        output_rate = float(cost_cfg.get("output_per_1m_tokens", 0.0) or 0.0)
+        currency = str(cost_cfg.get("currency", "USD"))
+        estimated_cost = (
+            (prompt_tokens / 1_000_000) * input_rate
+            + (completion_tokens / 1_000_000) * output_rate
+        )
+        await self.db.conn.execute(
+            """
+            INSERT INTO llm_usage (
+                model, prompt_tokens, completion_tokens, total_tokens,
+                estimated_cost, currency, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                model,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                estimated_cost,
+                currency,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await self.db.conn.commit()
+        return {
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "estimated_cost": estimated_cost,
+            "currency": currency,
+        }
+
+    async def get_metrics_summary(self, days: int = 30) -> dict[str, Any]:
+        since = (
+            datetime.now(timezone.utc) - timedelta(days=max(days - 1, 0))
+        ).strftime("%Y-%m-%d")
+        status_rows = await self._fetch_rows(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM jobs
+            WHERE created_at >= ?
+            GROUP BY status
+            """,
+            (since,),
+        )
+        completed_count = next(
+            (row["count"] for row in status_rows if row["status"] == "completed"),
+            0,
+        )
+        revenue_rows = await self._fetch_rows(
+            """
+            SELECT payment_currency, COALESCE(SUM(payment_amount), 0) AS amount
+            FROM jobs
+            WHERE status = 'completed' AND created_at >= ?
+            GROUP BY payment_currency
+            """,
+            (since,),
+        )
+        protocol_rows = await self._fetch_rows(
+            """
+            SELECT payment_protocol, COUNT(*) AS jobs, COALESCE(SUM(payment_amount), 0) AS revenue
+            FROM jobs
+            WHERE created_at >= ?
+            GROUP BY payment_protocol
+            ORDER BY revenue DESC, jobs DESC
+            """,
+            (since,),
+        )
+        avg_job_row = await self._fetch_one(
+            """
+            SELECT COALESCE(AVG(payment_amount), 0) AS avg_value
+            FROM jobs
+            WHERE status = 'completed' AND created_at >= ?
+            """,
+            (since,),
+        )
+        llm_row = await self._fetch_one(
+            """
+            SELECT
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(estimated_cost), 0) AS estimated_cost,
+                MIN(currency) AS currency
+            FROM llm_usage
+            WHERE created_at >= ?
+            """,
+            (since,),
+        )
+        llm_model_rows = await self._fetch_rows(
+            """
+            SELECT model, COUNT(*) AS calls, COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(estimated_cost), 0) AS estimated_cost
+            FROM llm_usage
+            WHERE created_at >= ?
+            GROUP BY model
+            ORDER BY estimated_cost DESC, total_tokens DESC
+            """,
+            (since,),
+        )
+
+        stable_revenue = sum(
+            row["amount"]
+            for row in revenue_rows
+            if row["payment_currency"] in {"USD", "USDC"}
+        )
+        llm_cost = float(llm_row.get("estimated_cost", 0.0) if llm_row else 0.0)
+        return {
+            "days": days,
+            "since": since,
+            "jobs_by_status": {row["status"]: row["count"] for row in status_rows},
+            "completed_jobs": completed_count,
+            "revenue_by_currency": {
+                row["payment_currency"] or "UNKNOWN": row["amount"] for row in revenue_rows
+            },
+            "revenue_by_payment_protocol": [
+                {
+                    "payment_protocol": row["payment_protocol"] or "unknown",
+                    "jobs": row["jobs"],
+                    "revenue": row["revenue"],
+                }
+                for row in protocol_rows
+            ],
+            "avg_completed_job_value": avg_job_row.get("avg_value", 0.0)
+            if avg_job_row
+            else 0.0,
+            "llm_usage": {
+                "prompt_tokens": llm_row.get("prompt_tokens", 0) if llm_row else 0,
+                "completion_tokens": llm_row.get("completion_tokens", 0)
+                if llm_row
+                else 0,
+                "total_tokens": llm_row.get("total_tokens", 0) if llm_row else 0,
+                "estimated_cost": llm_cost,
+                "currency": (llm_row.get("currency") if llm_row else None) or "USD",
+                "by_model": llm_model_rows,
+            },
+            "estimated_stable_margin": stable_revenue - llm_cost,
+        }
+
+    async def get_metrics_timeseries(self, days: int = 14) -> list[dict[str, Any]]:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=max(days - 1, 0))
+        since = since_dt.strftime("%Y-%m-%d")
+        revenue_rows = await self._fetch_rows(
+            """
+            SELECT substr(created_at, 1, 10) AS day, COALESCE(SUM(payment_amount), 0) AS revenue
+            FROM jobs
+            WHERE status = 'completed' AND created_at >= ?
+            GROUP BY substr(created_at, 1, 10)
+            """,
+            (since,),
+        )
+        llm_rows = await self._fetch_rows(
+            """
+            SELECT substr(created_at, 1, 10) AS day, COALESCE(SUM(estimated_cost), 0) AS cost
+            FROM llm_usage
+            WHERE created_at >= ?
+            GROUP BY substr(created_at, 1, 10)
+            """,
+            (since,),
+        )
+        revenue_by_day = {row["day"]: row["revenue"] for row in revenue_rows}
+        cost_by_day = {row["day"]: row["cost"] for row in llm_rows}
+        series: list[dict[str, Any]] = []
+        for index in range(days):
+            day = (since_dt + timedelta(days=index)).strftime("%Y-%m-%d")
+            revenue = float(revenue_by_day.get(day, 0.0))
+            llm_cost = float(cost_by_day.get(day, 0.0))
+            series.append(
+                {
+                    "day": day,
+                    "revenue": revenue,
+                    "llm_cost": llm_cost,
+                    "stable_margin": revenue - llm_cost,
+                }
+            )
+        return series
+
+    async def _fetch_rows(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> list[dict[str, Any]]:
+        cursor = await self.db.conn.execute(query, params)
+        rows = await cursor.fetchall()
+        cols = [desc[0] for desc in cursor.description]
+        return [dict(zip(cols, row)) for row in rows]
+
+    async def _fetch_one(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> dict[str, Any] | None:
+        cursor = await self.db.conn.execute(query, params)
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        cols = [desc[0] for desc in cursor.description]
+        return dict(zip(cols, row))
+
     async def ensure_agent_loop(self) -> AgentLoop | None:
         if self._agent_loop is not None:
             return self._agent_loop
@@ -487,6 +694,7 @@ class RuntimeContext:
             system_prompt=custom_prompt if not append_to_default else DEFAULT_SYSTEM_PROMPT,
             max_tool_rounds=agent_cfg.get("max_tool_rounds", 20),
             extra_tools=self.registry.to_tool_definitions(),
+            usage_recorder=self.record_llm_usage,
         )
         return self._agent_loop
 

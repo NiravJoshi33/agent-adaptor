@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import tempfile
@@ -73,6 +74,11 @@ def _write_config(path: Path, spec_path: Path) -> None:
                     "apiKey": "test-key",
                     "systemPromptFile": str(path.parent / "prompts" / "system.md"),
                     "appendToDefault": True,
+                    "costs": {
+                        "input_per_1m_tokens": 5.0,
+                        "output_per_1m_tokens": 15.0,
+                        "currency": "USD",
+                    },
                 },
                 "capabilities": {
                     "source": {"type": "openapi", "url": str(spec_path)},
@@ -204,6 +210,54 @@ class CLITests(unittest.TestCase):
             config = yaml.safe_load(config_path.read_text())
             self.assertFalse(config["agent"]["appendToDefault"])
 
+    def test_cli_metrics_commands_report_job_and_llm_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "openapi.yaml"
+            config_path = root / "agent-adapter.yaml"
+            _write_openapi_spec(spec_path)
+            _write_config(config_path, spec_path)
+
+            async def seed_runtime() -> None:
+                runtime = await create_runtime(config_path)
+                try:
+                    job_id = await runtime.job_engine.create(
+                        capability="get_report",
+                        input_data={"report_id": "m1"},
+                        payment_protocol="x402",
+                        payment_amount=0.75,
+                    )
+                    await runtime.job_engine.mark_executing(job_id)
+                    await runtime.job_engine.mark_completed(job_id, output_hash="ok")
+                    await runtime.record_llm_usage(
+                        {
+                            "model": "openai/gpt-oss-120b",
+                            "prompt_tokens": 1000,
+                            "completion_tokens": 500,
+                            "total_tokens": 1500,
+                        }
+                    )
+                finally:
+                    await runtime.close()
+
+            asyncio.run(seed_runtime())
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "metrics", "summary", "--days", "30"])
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(summary["completed_jobs"], 1)
+            self.assertEqual(summary["revenue_by_currency"]["USDC"], 0.75)
+            self.assertEqual(summary["jobs_by_status"]["completed"], 1)
+            self.assertAlmostEqual(summary["llm_usage"]["estimated_cost"], 0.0125)
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "metrics", "daily", "--days", "7"])
+            series = json.loads(stdout.getvalue())["series"]
+            self.assertEqual(len(series), 7)
+            self.assertTrue(any(point["revenue"] == 0.75 for point in series))
+
 
 class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -259,6 +313,7 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
             capability="get_report",
             input_data={"report_id": "r1"},
             payment_protocol="free",
+            payment_amount=0.01,
         )
         await self.runtime.job_engine.mark_executing(job_id)
         await self.runtime.job_engine.mark_completed(job_id, output_hash="done")
@@ -280,6 +335,24 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         resumed = (await self.client.post("/manage/agent/resume")).json()
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(resumed["status"], "running")
+
+        await self.runtime.record_llm_usage(
+            {
+                "model": "openai/gpt-oss-120b",
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "total_tokens": 1500,
+            }
+        )
+        metrics = (await self.client.get("/manage/metrics?days=30")).json()
+        self.assertEqual(metrics["completed_jobs"], 1)
+        self.assertEqual(metrics["revenue_by_currency"]["USDC"], 0.01)
+        self.assertEqual(metrics["revenue_by_payment_protocol"][0]["payment_protocol"], "free")
+        self.assertAlmostEqual(metrics["llm_usage"]["estimated_cost"], 0.0125)
+
+        timeseries = (await self.client.get("/manage/metrics/timeseries?days=7")).json()["series"]
+        self.assertEqual(len(timeseries), 7)
+        self.assertTrue(any(point["llm_cost"] > 0 for point in timeseries))
 
     async def test_management_api_updates_prompt_and_rebuilds_agent_loop(self) -> None:
         prompt = (await self.client.get("/manage/agent/prompt")).json()
@@ -328,6 +401,29 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         capabilities_page = await self.client.get("/dashboard/capabilities")
         self.assertEqual(capabilities_page.status_code, 200)
         self.assertIn("Capability Registry", capabilities_page.text)
+
+        job_id = await self.runtime.job_engine.create(
+            capability="get_report",
+            input_data={"report_id": "dashboard"},
+            payment_protocol="x402",
+            payment_amount=0.45,
+        )
+        await self.runtime.job_engine.mark_executing(job_id)
+        await self.runtime.job_engine.mark_completed(job_id, output_hash="dashboard-ok")
+        await self.runtime.record_llm_usage(
+            {
+                "model": "openai/gpt-oss-120b",
+                "prompt_tokens": 800,
+                "completion_tokens": 200,
+                "total_tokens": 1000,
+            }
+        )
+
+        metrics_page = await self.client.get("/dashboard/metrics")
+        self.assertEqual(metrics_page.status_code, 200)
+        self.assertIn("Economic Observability", metrics_page.text)
+        self.assertIn("Daily Revenue vs Cost", metrics_page.text)
+        self.assertIn("&quot;page&quot;: &quot;metrics&quot;", metrics_page.text)
 
         self.spec_path.write_text(
             """

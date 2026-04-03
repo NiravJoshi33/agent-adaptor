@@ -72,6 +72,17 @@ CREATE TABLE IF NOT EXISTS decision_log (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    model            TEXT NOT NULL DEFAULT '',
+    prompt_tokens    INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens     INTEGER NOT NULL DEFAULT 0,
+    estimated_cost   REAL NOT NULL DEFAULT 0.0,
+    currency         TEXT NOT NULL DEFAULT 'USD',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS platforms (
     base_url            TEXT PRIMARY KEY,
     platform_name       TEXT,

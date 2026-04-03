@@ -383,7 +383,8 @@ a {
 }
 
 .grid.cards,
-.agent-grid {
+.agent-grid,
+.metrics-grid {
   display: grid;
   gap: 18px;
 }
@@ -395,6 +396,11 @@ a {
 
 .agent-grid {
   grid-template-columns: minmax(270px, 360px) 1fr;
+}
+
+.metrics-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 24px;
 }
 
 .card,
@@ -612,6 +618,111 @@ button.secondary {
   line-height: 1.55;
 }
 
+.metrics-chart {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(28px, 1fr));
+  gap: 12px;
+  align-items: end;
+  min-height: 240px;
+  padding: 18px 8px 8px;
+}
+
+.metrics-bar-group {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.metrics-bars {
+  width: 100%;
+  min-height: 200px;
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 6px;
+}
+
+.metrics-bar {
+  width: 14px;
+  min-height: 4px;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.metrics-bar.revenue,
+.legend-swatch.revenue {
+  background: linear-gradient(180deg, var(--accent-warm), #ffd16b);
+}
+
+.metrics-bar.cost,
+.legend-swatch.cost {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+}
+
+.metrics-day {
+  color: rgba(213, 208, 232, 0.62);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+}
+
+.metrics-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 12px;
+  color: var(--muted);
+}
+
+.metrics-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.metric-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.metric-row.compact {
+  padding: 12px 0;
+}
+
+.metric-value {
+  font-family: "Sora", "Outfit", sans-serif;
+  font-size: 1rem;
+  letter-spacing: -0.04em;
+  text-align: right;
+}
+
+.metrics-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.metric-subsection {
+  margin-top: 10px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .decision-log {
   position: relative;
 }
@@ -695,6 +806,10 @@ pre {
   }
 
   .agent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .metrics-grid {
     grid-template-columns: 1fr;
   }
 }

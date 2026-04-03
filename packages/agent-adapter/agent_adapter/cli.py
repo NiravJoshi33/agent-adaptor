@@ -63,6 +63,13 @@ def _parser() -> argparse.ArgumentParser:
     mode_group.add_argument("--append", action="store_true")
     mode_group.add_argument("--replace", action="store_true")
 
+    metrics = sub.add_parser("metrics")
+    metrics_sub = metrics.add_subparsers(dest="metrics_command", required=True)
+    metrics_summary = metrics_sub.add_parser("summary")
+    metrics_summary.add_argument("--days", type=int, default=30)
+    metrics_daily = metrics_sub.add_parser("daily")
+    metrics_daily.add_argument("--days", type=int, default=14)
+
     caps = sub.add_parser("capabilities")
     caps_sub = caps.add_subparsers(dest="caps_command", required=True)
     caps_sub.add_parser("list")
@@ -214,6 +221,18 @@ async def _run_prompt_command(args: argparse.Namespace) -> Any:
         await runtime.close()
 
 
+async def _run_metrics_command(args: argparse.Namespace) -> Any:
+    runtime = await create_runtime(args.config)
+    try:
+        if args.metrics_command == "summary":
+            return await runtime.get_metrics_summary(args.days)
+        if args.metrics_command == "daily":
+            return {"series": await runtime.get_metrics_timeseries(args.days)}
+        raise ValueError(f"Unknown metrics command: {args.metrics_command}")
+    finally:
+        await runtime.close()
+
+
 async def _run_start(args: argparse.Namespace) -> None:
     runtime = await create_runtime(args.config)
     app = create_management_app(runtime)
@@ -269,6 +288,9 @@ def app(argv: list[str] | None = None) -> None:
         return
     if args.command == "prompt":
         _print(asyncio.run(_run_prompt_command(args)))
+        return
+    if args.command == "metrics":
+        _print(asyncio.run(_run_metrics_command(args)))
         return
     if args.command == "start":
         try:
