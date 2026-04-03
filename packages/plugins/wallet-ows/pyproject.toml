@@ -2,9 +2,10 @@
 name = "wallet-ows"
 version = "0.1.0"
 description = "Open Wallet Standard wallet plugin for Agent Adapter"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "agent-adapter-contracts",
+    "open-wallet-standard>=1.2",
 ]
 
 [tool.uv.sources]

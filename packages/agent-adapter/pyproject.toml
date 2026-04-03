@@ -2,7 +2,7 @@
 name = "agent-adapter"
 version = "0.1.0"
 description = "Agent Adapter Runtime — turns any API into an autonomous economic agent"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "agent-adapter-contracts",
     "aiosqlite>=0.20",

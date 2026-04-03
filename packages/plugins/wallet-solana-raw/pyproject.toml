@@ -2,9 +2,10 @@
 name = "wallet-solana-raw"
 version = "0.1.0"
 description = "Raw Solana keypair wallet plugin for Agent Adapter"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "agent-adapter-contracts",
+    "solders>=0.26",
 ]
 
 [tool.uv.sources]
