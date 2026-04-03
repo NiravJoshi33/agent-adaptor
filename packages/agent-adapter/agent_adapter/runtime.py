@@ -1,0 +1,457 @@
+"""Runtime bootstrap and shared management services."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from agent_adapter.agent.loop import AgentLoop, DEFAULT_SYSTEM_PROMPT
+from agent_adapter.capabilities.manual import parse_manual_definitions
+from agent_adapter.capabilities.openapi import fetch_and_parse, parse_openapi_spec
+from agent_adapter.capabilities.registry import CapabilityRegistry
+from agent_adapter.config import apply_pricing_overlay, load_config
+from agent_adapter.extensions import ExtensionRegistry, load_extensions
+from agent_adapter.jobs.engine import JobEngine
+from agent_adapter.payments import PaymentRegistry, load_payment_registry
+from agent_adapter.store.database import Database
+from agent_adapter.store.encryption import WalletDerivedSecretsBackend
+from agent_adapter.store.secrets import SecretsStore
+from agent_adapter.store.state import StateStore
+from agent_adapter.tools.handlers import ToolHandlers
+from agent_adapter.wallet.loader import load_wallet
+from agent_adapter_contracts.types import Capability, PricingConfig
+
+
+def _data_dir(config: dict[str, Any], config_path: Path) -> Path:
+    raw = config.get("adapter", {}).get("dataDir", "./data")
+    path = Path(raw)
+    return path if path.is_absolute() else (config_path.parent / path).resolve()
+
+
+def _prompt_path(config: dict[str, Any], config_path: Path) -> Path:
+    raw = config.get("agent", {}).get("systemPromptFile", "./prompts/system.md")
+    path = Path(raw)
+    return path if path.is_absolute() else (config_path.parent / path).resolve()
+
+
+def _db_path(config: dict[str, Any], config_path: Path) -> Path:
+    raw = config.get("adapter", {}).get("dbPath")
+    if raw:
+        path = Path(raw)
+        return path if path.is_absolute() else (config_path.parent / path).resolve()
+    return _data_dir(config, config_path) / "adapter.db"
+
+
+async def _load_openapi_source(
+    url: str, *, base_url: str = ""
+) -> tuple[list[Capability], str]:
+    path = Path(url)
+    if path.exists():
+        raw = path.read_text()
+        return parse_openapi_spec(raw, base_url=base_url), f"file:{path.stat().st_mtime_ns}"
+    return await fetch_and_parse(url, base_url=base_url)
+
+
+async def discover_capabilities(
+    config: dict[str, Any],
+) -> tuple[CapabilityRegistry, dict[str, str]]:
+    """Discover capabilities from configured sources."""
+    registry = CapabilityRegistry()
+    source_hashes: dict[str, str] = {}
+    caps_cfg = config.get("capabilities", {})
+    sources = []
+    if "sources" in caps_cfg:
+        sources = caps_cfg["sources"]
+    elif "source" in caps_cfg:
+        sources = [caps_cfg["source"]]
+
+    for source in sources:
+        src_type = source.get("type")
+        if src_type == "openapi":
+            caps, source_hash = await _load_openapi_source(
+                source["url"],
+                base_url=source.get("base_url", ""),
+            )
+            for cap in caps:
+                registry.register(cap)
+                source_hashes[cap.name] = source_hash
+        elif src_type == "manual":
+            for cap in parse_manual_definitions(caps_cfg.get("definitions", [])):
+                registry.register(cap)
+                source_hashes[cap.name] = "manual"
+        else:
+            raise ValueError(f"Unsupported capability source type: {src_type}")
+
+    apply_pricing_overlay(registry, caps_cfg.get("pricing", {}))
+    return registry, source_hashes
+
+
+async def _get_capability_rows(db: Database) -> dict[str, dict[str, Any]]:
+    cursor = await db.conn.execute("SELECT * FROM capability_config")
+    rows = await cursor.fetchall()
+    cols = [desc[0] for desc in cursor.description]
+    return {
+        row[0]: dict(zip(cols, row))
+        for row in rows
+    }
+
+
+def _pricing_from_row(row: dict[str, Any]) -> PricingConfig | None:
+    if not row.get("pricing_model"):
+        return None
+    return PricingConfig(
+        model=row["pricing_model"],
+        amount=row["pricing_amount"] or 0.0,
+        currency=row.get("pricing_currency") or "USDC",
+        item_field=row.get("pricing_item_field") or "",
+        floor=row.get("pricing_floor") or 0.0,
+        ceiling=row.get("pricing_ceiling") or 0.0,
+    )
+
+
+async def sync_capability_overlays(
+    db: Database,
+    registry: CapabilityRegistry,
+    source_hashes: dict[str, str] | None = None,
+) -> None:
+    """Persist discovered capabilities and re-apply provider overlays from SQLite."""
+    rows = await _get_capability_rows(db)
+    for cap in registry.list_all():
+        row = rows.get(cap.name)
+        source_hash = source_hashes.get(cap.name, "") if source_hashes else ""
+        if row is None:
+            await db.conn.execute(
+                """
+                INSERT INTO capability_config (
+                    name, enabled, pricing_amount, pricing_currency, pricing_model,
+                    pricing_item_field, pricing_floor, pricing_ceiling,
+                    source_hash, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    cap.name,
+                    1 if cap.enabled else 0,
+                    cap.pricing.amount if cap.pricing else None,
+                    cap.pricing.currency if cap.pricing else None,
+                    cap.pricing.model if cap.pricing else None,
+                    cap.pricing.item_field if cap.pricing else None,
+                    cap.pricing.floor if cap.pricing else None,
+                    cap.pricing.ceiling if cap.pricing else None,
+                    source_hash,
+                ),
+            )
+            continue
+
+        cap.enabled = bool(row["enabled"])
+        cap.pricing = _pricing_from_row(row)
+        if row.get("custom_description"):
+            cap.description = row["custom_description"]
+        if source_hash and source_hash != row.get("source_hash"):
+            await db.conn.execute(
+                """
+                UPDATE capability_config
+                SET source_hash = ?, updated_at = datetime('now')
+                WHERE name = ?
+                """,
+                (source_hash, cap.name),
+            )
+    await db.conn.commit()
+
+
+def _serialize_capability(cap: Capability) -> dict[str, Any]:
+    return {
+        "name": cap.name,
+        "source": cap.source,
+        "source_ref": cap.source_ref,
+        "description": cap.description,
+        "enabled": cap.enabled,
+        "pricing": None
+        if cap.pricing is None
+        else {
+            "model": cap.pricing.model,
+            "amount": cap.pricing.amount,
+            "currency": cap.pricing.currency,
+            "item_field": cap.pricing.item_field,
+            "floor": cap.pricing.floor,
+            "ceiling": cap.pricing.ceiling,
+        },
+        "input_schema": cap.input_schema,
+        "output_schema": cap.output_schema,
+        "base_url": cap.base_url,
+        "status": (
+            "active"
+            if cap.enabled and cap.pricing
+            else "disabled" if not cap.enabled else "needs_pricing"
+        ),
+    }
+
+
+@dataclass
+class RuntimeContext:
+    config: dict[str, Any]
+    config_path: Path
+    db: Database
+    wallet: Any
+    secrets: SecretsStore
+    state: StateStore
+    registry: CapabilityRegistry
+    payments: PaymentRegistry
+    extensions: ExtensionRegistry
+    job_engine: JobEngine
+    handlers: ToolHandlers
+    x402_http_client: Any = None
+    agent_paused: bool = False
+    _agent_loop: AgentLoop | None = None
+
+    async def whoami(self) -> dict[str, Any]:
+        active_jobs = await self.job_engine.list_active()
+        earnings = await self.job_engine.earnings_today()
+        balances = await self.wallet.get_balance()
+        return {
+            "adapter_name": self.config.get("adapter", {}).get("name", "agent-adapter"),
+            "wallet": await self.wallet.get_address(),
+            "balances": balances,
+            "registered_platforms": await self.list_platforms(),
+            "capabilities": await self.list_capabilities(),
+            "active_jobs": len(active_jobs),
+            "jobs_completed_today": (await self.job_engine.count_today()).get(
+                "completed", 0
+            ),
+            "earnings_today": earnings,
+            "payment_adapters": self.payments.list(),
+            "agent_status": "paused" if self.agent_paused else "running",
+        }
+
+    async def list_capabilities(self) -> list[dict[str, Any]]:
+        return [_serialize_capability(cap) for cap in self.registry.list_all()]
+
+    async def get_capability(self, name: str) -> dict[str, Any]:
+        cap = self.registry.get(name)
+        if cap is None:
+            raise KeyError(name)
+        return _serialize_capability(cap)
+
+    async def set_capability_pricing(
+        self,
+        name: str,
+        *,
+        model: str,
+        amount: float,
+        currency: str = "USDC",
+        item_field: str = "",
+        floor: float = 0.0,
+        ceiling: float = 0.0,
+    ) -> dict[str, Any]:
+        cap = self.registry.get(name)
+        if cap is None:
+            raise KeyError(name)
+        cap.pricing = PricingConfig(
+            model=model,
+            amount=amount,
+            currency=currency,
+            item_field=item_field,
+            floor=floor,
+            ceiling=ceiling,
+        )
+        await self.db.conn.execute(
+            """
+            INSERT INTO capability_config (
+                name, enabled, pricing_amount, pricing_currency, pricing_model,
+                pricing_item_field, pricing_floor, pricing_ceiling, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(name) DO UPDATE SET
+                pricing_amount = excluded.pricing_amount,
+                pricing_currency = excluded.pricing_currency,
+                pricing_model = excluded.pricing_model,
+                pricing_item_field = excluded.pricing_item_field,
+                pricing_floor = excluded.pricing_floor,
+                pricing_ceiling = excluded.pricing_ceiling,
+                updated_at = datetime('now')
+            """,
+            (
+                name,
+                1 if cap.enabled else 0,
+                amount,
+                currency,
+                model,
+                item_field,
+                floor,
+                ceiling,
+            ),
+        )
+        await self.db.conn.commit()
+        return await self.get_capability(name)
+
+    async def set_capability_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        cap = self.registry.get(name)
+        if cap is None:
+            raise KeyError(name)
+        cap.enabled = enabled
+        await self.db.conn.execute(
+            """
+            INSERT INTO capability_config (name, enabled, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(name) DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = datetime('now')
+            """,
+            (name, 1 if enabled else 0),
+        )
+        await self.db.conn.commit()
+        return await self.get_capability(name)
+
+    async def refresh_capabilities(self) -> list[dict[str, Any]]:
+        registry, source_hashes = await discover_capabilities(self.config)
+        await sync_capability_overlays(self.db, registry, source_hashes)
+        self.registry = registry
+        self.handlers._capability_registry = registry
+        return await self.list_capabilities()
+
+    async def list_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        return await self.job_engine.list_recent(limit)
+
+    async def list_platforms(self) -> list[dict[str, Any]]:
+        cursor = await self.db.conn.execute(
+            "SELECT * FROM platforms ORDER BY platform_name, base_url"
+        )
+        rows = await cursor.fetchall()
+        cols = [desc[0] for desc in cursor.description]
+        return [dict(zip(cols, row)) for row in rows]
+
+    async def list_decisions(self, limit: int = 50) -> list[dict[str, Any]]:
+        cursor = await self.db.conn.execute(
+            "SELECT * FROM decision_log ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        rows = await cursor.fetchall()
+        cols = [desc[0] for desc in cursor.description]
+        data = [dict(zip(cols, row)) for row in rows]
+        for row in data:
+            if row.get("detail"):
+                try:
+                    row["detail"] = json.loads(row["detail"])
+                except Exception:
+                    pass
+        return data
+
+    async def pause_agent(self) -> dict[str, Any]:
+        self.agent_paused = True
+        return {"status": "paused"}
+
+    async def resume_agent(self) -> dict[str, Any]:
+        self.agent_paused = False
+        return {"status": "running"}
+
+    async def ensure_agent_loop(self) -> AgentLoop | None:
+        if self._agent_loop is not None:
+            return self._agent_loop
+
+        agent_cfg = self.config.get("agent", {})
+        api_key = agent_cfg.get("apiKey") or _default_api_key(agent_cfg)
+        if not api_key:
+            return None
+
+        prompt_path = _prompt_path(self.config, self.config_path)
+        custom_prompt = prompt_path.read_text() if prompt_path.exists() else ""
+        append_to_default = agent_cfg.get("appendToDefault", True)
+        self._agent_loop = AgentLoop(
+            api_key=api_key,
+            model=agent_cfg.get("model", "openai/gpt-oss-120b"),
+            base_url=agent_cfg.get("base_url", "https://openrouter.ai/api/v1"),
+            handlers=self.handlers,
+            custom_prompt=custom_prompt if append_to_default else "",
+            system_prompt=custom_prompt if not append_to_default else DEFAULT_SYSTEM_PROMPT,
+            max_tool_rounds=agent_cfg.get("max_tool_rounds", 20),
+            extra_tools=self.registry.to_tool_definitions(),
+        )
+        return self._agent_loop
+
+    async def run_agent_once(self, message: str = "Begin your planning loop.") -> str:
+        agent = await self.ensure_agent_loop()
+        if agent is None:
+            return "Agent API key not configured; skipping agent loop."
+        if self.agent_paused:
+            return "Agent is paused."
+        return await agent.run_once(message)
+
+    async def run_agent_forever(self) -> None:
+        interval = int(self.config.get("agent", {}).get("loopInterval", 30))
+        while True:
+            if not self.agent_paused:
+                await self.run_agent_once()
+            await asyncio.sleep(interval)
+
+    async def close(self) -> None:
+        await self.handlers.close()
+        await self.db.close()
+
+
+def _default_api_key(agent_cfg: dict[str, Any]) -> str:
+    provider = agent_cfg.get("provider", "")
+    if provider == "openai":
+        return os.environ.get("OPENAI_API_KEY", "")
+    if provider == "anthropic":
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+    return os.environ.get("OPENROUTER_API_KEY", "")
+
+
+async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> RuntimeContext:
+    config_path = Path(config_path).resolve()
+    config = load_config(config_path)
+    db = Database(_db_path(config, config_path))
+    await db.connect()
+
+    wallet_cfg = config.get("wallet", {})
+    wallet = await load_wallet(
+        wallet_cfg.get("provider", "solana-raw"), wallet_cfg.get("config", {})
+    )
+
+    key_material = (
+        wallet.secret_bytes
+        if hasattr(wallet, "secret_bytes")
+        else await wallet.sign_message(b"agent-adapter-encryption-key-derivation")
+    )
+    secrets = SecretsStore(db, WalletDerivedSecretsBackend(key_material))
+    state = StateStore(db)
+    registry, source_hashes = await discover_capabilities(config)
+    await sync_capability_overlays(db, registry, source_hashes)
+
+    extensions = await load_extensions(config.get("extensions"), runtime=None)
+    job_engine = JobEngine(db, extensions)
+
+    payments = load_payment_registry(config.get("payments"), wallet=wallet)
+
+    x402_http_client = None
+    if "x402" in payments.list() and hasattr(wallet, "keypair"):
+        from payment_x402.http_client import X402HttpClient
+
+        rpc_url = wallet_cfg.get("config", {}).get("rpc_url", "http://127.0.0.1:8899")
+        x402_http_client = X402HttpClient(keypair=wallet.keypair, rpc_url=rpc_url)
+
+    runtime = RuntimeContext(
+        config=config,
+        config_path=config_path,
+        db=db,
+        wallet=wallet,
+        secrets=secrets,
+        state=state,
+        registry=registry,
+        payments=payments,
+        extensions=extensions,
+        job_engine=job_engine,
+        handlers=ToolHandlers(
+            wallet=wallet,
+            secrets=secrets,
+            state=state,
+            db=db,
+            job_engine=job_engine,
+            capability_registry=registry,
+            x402_http_client=x402_http_client,
+        ),
+        x402_http_client=x402_http_client,
+    )
+    runtime.handlers._whoami_fn = runtime.whoami
+    return runtime
