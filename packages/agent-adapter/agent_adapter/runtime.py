@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_adapter.agent.loop import AgentLoop, DEFAULT_SYSTEM_PROMPT
 from agent_adapter.capabilities.manual import parse_manual_definitions
+from agent_adapter.capabilities.mcp import fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import fetch_and_parse, parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.config import apply_pricing_overlay, load_config, update_agent_config
@@ -91,6 +92,14 @@ async def discover_capabilities(
             for cap in parse_manual_definitions(caps_cfg.get("definitions", [])):
                 registry.register(cap)
                 source_hashes[cap.name] = "manual"
+        elif src_type == "mcp":
+            caps, source_hash = await fetch_mcp_capabilities(
+                source.get("server") or source.get("url", ""),
+                headers=source.get("headers"),
+            )
+            for cap in caps:
+                registry.register(cap)
+                source_hashes[cap.name] = source_hash
         else:
             raise ValueError(f"Unsupported capability source type: {src_type}")
 

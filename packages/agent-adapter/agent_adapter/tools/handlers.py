@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
+from agent_adapter.capabilities.mcp import call_mcp_tool, fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import fetch_and_parse
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.payments.registry import PaymentRegistry
@@ -35,6 +36,7 @@ class ToolHandlers:
         x402_http_client: Any = None,
         capability_registry: CapabilityRegistry | None = None,
         payments: PaymentRegistry | None = None,
+        plain_http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._wallet = wallet
         self._secrets = secrets
@@ -45,7 +47,10 @@ class ToolHandlers:
         self._x402_http_client = x402_http_client
         self._capability_registry = capability_registry
         self._payments = payments
-        self._plain_http_client = httpx.AsyncClient(follow_redirects=True, timeout=30)
+        self._owns_plain_http_client = plain_http_client is None
+        self._plain_http_client = plain_http_client or httpx.AsyncClient(
+            follow_redirects=True, timeout=30
+        )
 
     @property
     def _http_client(self):
@@ -114,16 +119,26 @@ class ToolHandlers:
         )
 
     async def _handle_net__fetch_spec(self, args: dict) -> dict:
-        caps, content_hash = await fetch_and_parse(args["url"])
+        try:
+            caps, content_hash = await fetch_and_parse(
+                args["url"], client=self._plain_http_client
+            )
+            if not caps:
+                raise ValueError("No OpenAPI capabilities discovered")
+            source_type = "openapi"
+        except Exception:
+            caps, content_hash = await fetch_mcp_capabilities(
+                args["url"], client=self._plain_http_client
+            )
+            source_type = "mcp"
         return {
+            "source_type": source_type,
             "capabilities": [
                 {
                     "name": c.name,
                     "description": c.description,
                     "source_ref": c.source_ref,
-                    "input_fields": list(
-                        c.input_schema.get("properties", {}).keys()
-                    ),
+                    "input_fields": list(c.input_schema.get("properties", {}).keys()),
                 }
                 for c in caps
             ],
@@ -252,6 +267,8 @@ class ToolHandlers:
             raise ValueError(f"Capability is not enabled and priced: {capability_name}")
 
         plan = capability.execution
+        if plan.get("type") == "mcp":
+            return await self._execute_mcp_capability(capability, args)
         if plan.get("type") != "http":
             raise NotImplementedError(
                 f"Capability execution is not implemented for source {capability.source}"
@@ -323,6 +340,57 @@ class ToolHandlers:
             if job_id:
                 response["job_id"] = job_id
             return response
+        except Exception as exc:
+            if self._job_engine and job_id:
+                await self._job_engine.mark_failed(
+                    job_id, error=str(exc), payment_status="pending"
+                )
+            raise
+
+    async def _execute_mcp_capability(
+        self, capability: Any, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        plan = capability.execution
+        server_url = plan.get("server_url", "")
+        if not server_url:
+            raise ValueError("MCP capability is missing a server_url")
+
+        job_id = None
+        if self._job_engine:
+            job_id = await self._job_engine.create(
+                capability=capability.name,
+                input_data=args,
+                payment_protocol="free",
+                payment_amount=0.0,
+                payment_currency=capability.pricing.currency,
+            )
+            await self._job_engine.mark_executing(job_id)
+
+        try:
+            result = await call_mcp_tool(
+                server_url,
+                tool_name=plan.get("tool_name", capability.source_ref or capability.name),
+                arguments=args,
+                headers=plan.get("headers"),
+                client=self._plain_http_client,
+            )
+            if self._job_engine and job_id:
+                if result.get("is_error"):
+                    await self._job_engine.mark_failed(
+                        job_id,
+                        error=self._hash_payload(result.get("raw")),
+                        payment_status="settled",
+                    )
+                else:
+                    await self._job_engine.mark_completed(
+                        job_id,
+                        output_hash=self._hash_payload(result.get("raw")),
+                        payment_status="settled",
+                    )
+            result["capability"] = capability.name
+            if job_id:
+                result["job_id"] = job_id
+            return result
         except Exception as exc:
             if self._job_engine and job_id:
                 await self._job_engine.mark_failed(
@@ -411,6 +479,7 @@ class ToolHandlers:
         return self._payments.resolve(PaymentChallenge(type=challenge_type))
 
     async def close(self) -> None:
-        await self._plain_http_client.aclose()
+        if self._owns_plain_http_client:
+            await self._plain_http_client.aclose()
         if self._x402_http_client and hasattr(self._x402_http_client, "aclose"):
             await self._x402_http_client.aclose()

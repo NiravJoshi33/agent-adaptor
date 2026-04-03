@@ -7,7 +7,9 @@ import os
 import tempfile
 import unittest
 import base64
+import httpx
 
+from agent_adapter.capabilities.mcp import MCP_PROTOCOL_VERSION, fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.payments import load_payment_registry
@@ -211,6 +213,241 @@ paths:
         self.assertEqual(cap.execution["path_params"], ["report_id"])
         self.assertEqual(cap.execution["query_params"], ["include_meta"])
         self.assertTrue(cap.execution["body_required"])
+
+
+class MCPCapabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_mcp_capabilities_initializes_and_paginates(self) -> None:
+        calls: list[tuple[str, dict, dict[str, str]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(405, text="Method Not Allowed")
+            payload = json.loads(request.content.decode())
+            calls.append((payload["method"], payload.get("params", {}), dict(request.headers)))
+            if payload["method"] == "initialize":
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {"protocolVersion": MCP_PROTOCOL_VERSION},
+                    },
+                )
+            if payload["method"] == "notifications/initialized":
+                return httpx.Response(202, json={})
+            if payload["method"] == "tools/list" and not payload.get("params"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "get_report",
+                                    "description": "Fetch a report",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {"report_id": {"type": "string"}},
+                                        "required": ["report_id"],
+                                    },
+                                }
+                            ],
+                            "nextCursor": "page-2",
+                        },
+                    },
+                )
+            if payload["method"] == "tools/list":
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "create_export",
+                                    "description": "Create export",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {"format": {"type": "string"}},
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                )
+            raise AssertionError(f"Unexpected MCP method: {payload['method']}")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(client.aclose)
+
+        capabilities, content_hash = await fetch_mcp_capabilities(
+            "http://mcp.test",
+            headers={"Authorization": "Bearer token"},
+            client=client,
+        )
+
+        self.assertEqual([cap.name for cap in capabilities], ["get_report", "create_export"])
+        self.assertTrue(content_hash)
+        self.assertEqual(
+            [method for method, _, _ in calls],
+            ["initialize", "notifications/initialized", "tools/list", "tools/list"],
+        )
+        self.assertEqual(
+            calls[2][2].get("mcp-protocol-version")
+            or calls[2][2].get("MCP-Protocol-Version"),
+            MCP_PROTOCOL_VERSION,
+        )
+        self.assertEqual(capabilities[0].source, "mcp")
+        self.assertEqual(capabilities[0].execution["tool_name"], "get_report")
+        self.assertEqual(
+            capabilities[0].input_schema["required"],
+            ["report_id"],
+        )
+
+    async def test_mcp_capability_dispatch_and_fetch_spec_use_runtime_protocol(self) -> None:
+        calls: list[tuple[str, dict, dict[str, str]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode())
+            calls.append((payload["method"], payload.get("params", {}), dict(request.headers)))
+            if payload["method"] == "initialize":
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {"protocolVersion": MCP_PROTOCOL_VERSION},
+                    },
+                )
+            if payload["method"] == "notifications/initialized":
+                return httpx.Response(202, json={})
+            if payload["method"] == "tools/list":
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": payload.get("id"),
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "sum_numbers",
+                                    "description": "Add numbers",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "values": {
+                                                "type": "array",
+                                                "items": {"type": "integer"},
+                                            }
+                                        },
+                                        "required": ["values"],
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                )
+            if payload["method"] == "tools/call":
+                self.assertEqual(payload["params"]["name"], "sum_numbers")
+                self.assertEqual(payload["params"]["arguments"], {"values": [1, 2, 3]})
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {
+                            "content": [{"type": "text", "text": "6"}],
+                            "structuredContent": {"sum": 6},
+                        },
+                    },
+                )
+            raise AssertionError(f"Unexpected MCP method: {payload['method']}")
+
+        db_dir = tempfile.TemporaryDirectory()
+        self.addAsyncCleanup(db_dir.cleanup)
+        db = Database(os.path.join(db_dir.name, "mcp.db"))
+        await db.connect()
+        self.addAsyncCleanup(db.close)
+
+        wallet = DummyWallet()
+        secrets = SecretsStore(db, WalletDerivedSecretsBackend(b"\x22" * 64))
+        state = StateStore(db)
+        job_engine = JobEngine(db)
+        registry = CapabilityRegistry()
+        registry.register(
+            Capability(
+                name="sum_numbers",
+                source="mcp",
+                source_ref="sum_numbers",
+                description="Add numbers",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "values": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        }
+                    },
+                    "required": ["values"],
+                },
+                execution={
+                    "type": "mcp",
+                    "server_url": "http://mcp.test",
+                    "tool_name": "sum_numbers",
+                    "headers": {"Authorization": "Bearer token"},
+                },
+                enabled=True,
+                pricing=PricingConfig(model="per_call", amount=0.2),
+            )
+        )
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        handlers = ToolHandlers(
+            wallet=wallet,
+            secrets=secrets,
+            state=state,
+            db=db,
+            job_engine=job_engine,
+            capability_registry=registry,
+            plain_http_client=client,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        fetched = json.loads(await handlers.dispatch("net__fetch_spec", {"url": "http://mcp.test"}))
+        self.assertEqual(fetched["source_type"], "mcp")
+        self.assertEqual(fetched["count"], 1)
+
+        result = json.loads(
+            await handlers.dispatch("cap__sum_numbers", {"values": [1, 2, 3]})
+        )
+        self.assertEqual(result["structured_content"], {"sum": 6})
+        self.assertFalse(result["is_error"])
+
+        jobs = await job_engine.list_recent(1)
+        self.assertEqual(jobs[0]["status"], "completed")
+        self.assertEqual(jobs[0]["payment_protocol"], "free")
+        self.assertEqual(
+            [method for method, _, _ in calls],
+            [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+            ],
+        )
+        self.assertEqual(
+            calls[-1][2].get("authorization")
+            or calls[-1][2].get("Authorization"),
+            "Bearer token",
+        )
+        self.assertEqual(
+            calls[-1][2].get("mcp-protocol-version")
+            or calls[-1][2].get("MCP-Protocol-Version"),
+            MCP_PROTOCOL_VERSION,
+        )
 
 
 class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):

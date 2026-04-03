@@ -184,15 +184,20 @@ def spec_hash(spec_data: str | bytes) -> str:
 
 
 async def fetch_and_parse(
-    url: str, base_url: str = ""
+    url: str, base_url: str = "", client: httpx.AsyncClient | None = None
 ) -> tuple[list[Capability], str]:
     """Fetch an OpenAPI spec from a URL and parse it.
 
     Returns (capabilities, content_hash).
     """
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    own_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(follow_redirects=True)
+    try:
         resp = await client.get(url)
         resp.raise_for_status()
-
-    raw = resp.text
-    return parse_openapi_spec(raw, base_url=base_url), spec_hash(raw)
+        raw = resp.text
+        return parse_openapi_spec(raw, base_url=base_url), spec_hash(raw)
+    finally:
+        if own_client:
+            await client.aclose()
