@@ -1,0 +1,37 @@
+openapi: 3.0.0
+info:
+  title: Preview Provider API
+  version: 1.0.0
+servers:
+  - url: https://preview.provider.local
+paths:
+  /reports/{report_id}:
+    parameters:
+      - name: report_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: get_report
+      summary: Fetch a report by ID
+      responses:
+        "200":
+          description: ok
+  /exports:
+    post:
+      operationId: create_export
+      summary: Create a data export
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                format:
+                  type: string
+              required: ["format"]
+      responses:
+        "200":
+          description: ok

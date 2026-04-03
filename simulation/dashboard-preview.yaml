@@ -1,0 +1,35 @@
+adapter:
+  name: "preview-agent"
+  dataDir: "./simulation/data-preview"
+  dashboard:
+    bind: "127.0.0.1"
+    port: 9090
+
+wallet:
+  provider: "preview"
+  config:
+    module: "agent_adapter.preview_wallet"
+    class_name: "PreviewWalletPlugin"
+    address: "preview-wallet-local"
+    sol: 1.25
+    usdc: 42.0
+
+agent:
+  provider: "openrouter"
+  model: "openai/gpt-oss-120b"
+  systemPromptFile: "./prompts/system.md"
+  appendToDefault: true
+  loopInterval: 30
+
+capabilities:
+  source:
+    type: "openapi"
+    url: "./simulation/dashboard-preview-openapi.yaml"
+  pricing:
+    get_report:
+      model: per_call
+      amount: 0.02
+      enabled: true
+
+payments:
+  - type: "free"

@@ -239,3 +239,67 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         resumed = (await self.client.post("/manage/agent/resume")).json()
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(resumed["status"], "running")
+
+    async def test_dashboard_pages_render_and_capability_refresh_surfaces_drift(self) -> None:
+        overview = await self.client.get("/dashboard/")
+        self.assertEqual(overview.status_code, 200)
+        self.assertIn("Local Provider Console", overview.text)
+
+        capabilities_page = await self.client.get("/dashboard/capabilities")
+        self.assertEqual(capabilities_page.status_code, 200)
+        self.assertIn("Capability Registry", capabilities_page.text)
+
+        self.spec_path.write_text(
+            """
+openapi: 3.0.0
+servers:
+  - url: https://provider.example.com
+paths:
+  /reports/{report_id}:
+    parameters:
+      - name: report_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      operationId: get_report
+      summary: Get report changed
+      responses:
+        '200':
+          description: ok
+  /exports:
+    post:
+      operationId: create_export
+      summary: Create export
+      responses:
+        '200':
+          description: ok
+"""
+        )
+
+        refreshed = (await self.client.post("/manage/capabilities/refresh")).json()
+        by_name = {cap["name"]: cap for cap in refreshed["capabilities"]}
+        self.assertEqual(by_name["get_report"]["drift_status"], "schema_changed")
+        self.assertIn(by_name["get_report"]["status"], {"schema_changed", "disabled"})
+        self.assertEqual(by_name["create_export"]["drift_status"], "new")
+
+        self.spec_path.write_text(
+            """
+openapi: 3.0.0
+servers:
+  - url: https://provider.example.com
+paths:
+  /exports:
+    post:
+      operationId: create_export
+      summary: Create export
+      responses:
+        '200':
+          description: ok
+"""
+        )
+        refreshed = (await self.client.post("/manage/capabilities/refresh")).json()
+        by_name = {cap["name"]: cap for cap in refreshed["capabilities"]}
+        self.assertEqual(by_name["get_report"]["drift_status"], "stale")
+        self.assertEqual(by_name["get_report"]["status"], "stale")

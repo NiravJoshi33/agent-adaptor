@@ -124,6 +124,8 @@ async def sync_capability_overlays(
         row = rows.get(cap.name)
         source_hash = source_hashes.get(cap.name, "") if source_hashes else ""
         if row is None:
+            cap.drift_status = "new"  # type: ignore[attr-defined]
+            cap.source_hash = source_hash  # type: ignore[attr-defined]
             await db.conn.execute(
                 """
                 INSERT INTO capability_config (
@@ -148,6 +150,12 @@ async def sync_capability_overlays(
 
         cap.enabled = bool(row["enabled"])
         cap.pricing = _pricing_from_row(row)
+        cap.source_hash = source_hash or row.get("source_hash", "")  # type: ignore[attr-defined]
+        cap.drift_status = (  # type: ignore[attr-defined]
+            "schema_changed"
+            if source_hash and source_hash != row.get("source_hash")
+            else "unchanged"
+        )
         if row.get("custom_description"):
             cap.description = row["custom_description"]
         if source_hash and source_hash != row.get("source_hash"):
@@ -162,7 +170,45 @@ async def sync_capability_overlays(
     await db.conn.commit()
 
 
+async def build_stale_capability_records(
+    db: Database, registry: CapabilityRegistry
+) -> list[dict[str, Any]]:
+    rows = await _get_capability_rows(db)
+    stale: list[dict[str, Any]] = []
+    live_names = {cap.name for cap in registry.list_all()}
+    for name, row in rows.items():
+        if name in live_names:
+            continue
+        pricing = _pricing_from_row(row)
+        stale.append(
+            {
+                "name": name,
+                "source": "unknown",
+                "source_ref": "",
+                "description": row.get("custom_description") or "",
+                "enabled": bool(row["enabled"]),
+                "pricing": None
+                if pricing is None
+                else {
+                    "model": pricing.model,
+                    "amount": pricing.amount,
+                    "currency": pricing.currency,
+                    "item_field": pricing.item_field,
+                    "floor": pricing.floor,
+                    "ceiling": pricing.ceiling,
+                },
+                "input_schema": {},
+                "output_schema": {},
+                "base_url": "",
+                "status": "stale",
+                "drift_status": "stale",
+            }
+        )
+    return stale
+
+
 def _serialize_capability(cap: Capability) -> dict[str, Any]:
+    drift_status = getattr(cap, "drift_status", "unchanged")
     return {
         "name": cap.name,
         "source": cap.source,
@@ -182,8 +228,15 @@ def _serialize_capability(cap: Capability) -> dict[str, Any]:
         "input_schema": cap.input_schema,
         "output_schema": cap.output_schema,
         "base_url": cap.base_url,
+        "drift_status": drift_status,
         "status": (
-            "active"
+            "stale"
+            if drift_status == "stale"
+            else "schema_changed"
+            if drift_status == "schema_changed"
+            else "new"
+            if drift_status == "new" and not cap.pricing
+            else "active"
             if cap.enabled and cap.pricing
             else "disabled" if not cap.enabled else "needs_pricing"
         ),
@@ -205,6 +258,7 @@ class RuntimeContext:
     handlers: ToolHandlers
     x402_http_client: Any = None
     agent_paused: bool = False
+    stale_capabilities: list[dict[str, Any]] | None = None
     _agent_loop: AgentLoop | None = None
 
     async def whoami(self) -> dict[str, Any]:
@@ -227,7 +281,8 @@ class RuntimeContext:
         }
 
     async def list_capabilities(self) -> list[dict[str, Any]]:
-        return [_serialize_capability(cap) for cap in self.registry.list_all()]
+        capabilities = [_serialize_capability(cap) for cap in self.registry.list_all()]
+        return capabilities + list(self.stale_capabilities or [])
 
     async def get_capability(self, name: str) -> dict[str, Any]:
         cap = self.registry.get(name)
@@ -309,6 +364,10 @@ class RuntimeContext:
         await sync_capability_overlays(self.db, registry, source_hashes)
         self.registry = registry
         self.handlers._capability_registry = registry
+        self.stale_capabilities = await build_stale_capability_records(self.db, registry)
+        for cap in self.registry.list_all():
+            if "drift_status" not in cap.__dict__:
+                cap.drift_status = "unchanged"  # type: ignore[attr-defined]
         return await self.list_capabilities()
 
     async def list_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -418,6 +477,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
     state = StateStore(db)
     registry, source_hashes = await discover_capabilities(config)
     await sync_capability_overlays(db, registry, source_hashes)
+    stale_capabilities = await build_stale_capability_records(db, registry)
 
     extensions = await load_extensions(config.get("extensions"), runtime=None)
     job_engine = JobEngine(db, extensions)
@@ -452,6 +512,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
             x402_http_client=x402_http_client,
         ),
         x402_http_client=x402_http_client,
+        stale_capabilities=stale_capabilities,
     )
     runtime.handlers._whoami_fn = runtime.whoami
     return runtime

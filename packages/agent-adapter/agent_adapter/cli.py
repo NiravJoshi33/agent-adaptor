@@ -210,6 +210,8 @@ async def _run_start(args: argparse.Namespace) -> None:
 
     try:
         await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        pass
     finally:
         for task in tasks:
             task.cancel()
@@ -234,6 +236,9 @@ def app(argv: list[str] | None = None) -> None:
         _print(asyncio.run(_run_agent_command(args)))
         return
     if args.command == "start":
-        asyncio.run(_run_start(args))
+        try:
+            asyncio.run(_run_start(args))
+        except KeyboardInterrupt:
+            pass
         return
     raise SystemExit(f"Unsupported command: {args.command}")

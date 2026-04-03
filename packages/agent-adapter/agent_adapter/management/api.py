@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from agent_adapter.management.dashboard import mount_dashboard
 from agent_adapter.runtime import RuntimeContext
 
 
@@ -24,6 +25,7 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
         docs_url="/manage/docs",
         openapi_url="/manage/openapi.json",
     )
+    mount_dashboard(app, runtime)
 
     @app.get("/manage/status")
     async def get_status():
