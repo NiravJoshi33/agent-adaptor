@@ -21,6 +21,7 @@ bundled = [
     "payment-free",
     "payment-x402",
     "payment-escrow",
+    "payment-mpp-stripe",
     "webhook-notifier",
 ]
 
@@ -34,4 +35,5 @@ wallet-ows = { workspace = true }
 payment-free = { workspace = true }
 payment-x402 = { workspace = true }
 payment-escrow = { workspace = true }
+payment-mpp-stripe = { workspace = true }
 webhook-notifier = { workspace = true }

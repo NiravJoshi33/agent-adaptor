@@ -13,6 +13,9 @@ _BUNDLED_PAYMENT_PLUGINS: dict[str, tuple[str, str]] = {
     "x402": ("payment_x402", "X402Adapter"),
     "escrow": ("payment_escrow", "EscrowAdapter"),
     "solana_escrow": ("payment_escrow", "EscrowAdapter"),
+    "mpp": ("payment_mpp_stripe", "MPPStripeAdapter"),
+    "stripe_mpp": ("payment_mpp_stripe", "MPPStripeAdapter"),
+    "mpp_stripe": ("payment_mpp_stripe", "MPPStripeAdapter"),
 }
 
 

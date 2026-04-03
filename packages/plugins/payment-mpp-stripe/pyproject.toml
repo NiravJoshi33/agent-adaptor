@@ -1,0 +1,17 @@
+[project]
+name = "payment-mpp-stripe"
+version = "0.1.0"
+description = "Stripe-backed MPP payment adapter for Agent Adapter"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "agent-adapter-contracts",
+    "httpx>=0.28,<1",
+]
+
+[project.entry-points."agent_adapter.payments"]
+mpp = "payment_mpp_stripe:MPPStripeAdapter"
+stripe_mpp = "payment_mpp_stripe:MPPStripeAdapter"
+mpp_stripe = "payment_mpp_stripe:MPPStripeAdapter"
+
+[tool.uv.sources]
+agent-adapter-contracts = { workspace = true }

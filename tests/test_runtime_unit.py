@@ -25,9 +25,16 @@ from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.tools.definitions import build_tool_list
 from agent_adapter.tools.handlers import ToolHandlers
 from agent_adapter_contracts.extensions import RuntimeEvent
-from agent_adapter_contracts.payments import PaymentChallenge
+from agent_adapter_contracts.payments import PaymentChallenge, PaymentReceipt, PaymentSession
 from agent_adapter_contracts.types import Capability, PricingConfig, ToolDefinition
 from payment_escrow import EscrowAdapter
+from payment_mpp_stripe import (
+    MPPStripeAdapter,
+    STRIPE_MPP_API_VERSION,
+    build_payment_receipt_header,
+    parse_payment_authorization_header,
+    parse_payment_challenge_header,
+)
 from webhook_notifier import WebhookNotifierExtension
 from solders.hash import Hash
 from solders.keypair import Keypair
@@ -164,6 +171,36 @@ class FakeRpcFactory:
     def __call__(self, rpc_url: str) -> FakeRpcClient:
         self.client.rpc_url = rpc_url
         return self.client
+
+
+class FakeStripeResponse:
+    def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "stripe error",
+                request=httpx.Request("POST", "https://api.stripe.com"),
+                response=httpx.Response(self.status_code),
+            )
+
+    def json(self) -> dict[str, object]:
+        return dict(self._payload)
+
+
+class FakeStripeClient:
+    def __init__(self, responses: list[FakeStripeResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    async def post(self, url: str, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        return self._responses.pop(0)
+
+    async def aclose(self) -> None:
+        return None
 
 
 class FakeAgentMessage:
@@ -828,12 +865,19 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
 
 class LoaderTests(unittest.TestCase):
     def test_load_payment_registry_from_config(self) -> None:
-        registry = load_payment_registry([{"type": "free"}, {"type": "escrow"}])
-        self.assertEqual(registry.list(), ["free", "solana_escrow"])
+        registry = load_payment_registry(
+            [
+                {"type": "free"},
+                {"type": "escrow"},
+                {"type": "mpp", "config": {"secret_key": "sk_test_123"}},
+            ]
+        )
+        self.assertEqual(registry.list(), ["free", "solana_escrow", "stripe_mpp"])
         self.assertEqual(registry.resolve(PaymentChallenge(type="free")).id, "free")
         self.assertEqual(
             registry.resolve(PaymentChallenge(type="escrow")).id, "solana_escrow"
         )
+        self.assertEqual(registry.resolve(PaymentChallenge(type="mpp")).id, "stripe_mpp")
 
     def test_plugin_discovery_lists_entry_point_plugins(self) -> None:
         fake_eps = FakeEntryPoints(
@@ -883,6 +927,114 @@ class NotificationExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(extension.hooks[0], RuntimeEvent.ON_JOB_COMPLETE)
 
         await extension.shutdown()
+
+
+class MPPStripeAdapterTests(unittest.IsolatedAsyncioTestCase):
+    def _build_mpp_fixture(self) -> tuple[dict[str, object], dict[str, object]]:
+        request = {
+            "amount": "100",
+            "currency": "usd",
+            "description": "Premium API access",
+            "methodDetails": {
+                "networkId": "internal",
+                "metadata": {"product": "api"},
+            },
+        }
+        challenge = {
+            "id": "chlg_123",
+            "realm": "api.example.com",
+            "method": "stripe",
+            "intent": "charge",
+            "request": build_payment_receipt_header(request),
+            "expires": "2099-01-01T00:00:00Z",
+        }
+        credential = {
+            "challenge": challenge,
+            "payload": {
+                "spt": "spt_123",
+                "externalId": "ext_456",
+            },
+        }
+        return challenge, credential
+
+    async def test_mpp_adapter_executes_stripe_charge_from_headers(self) -> None:
+        challenge, credential = self._build_mpp_fixture()
+        client = FakeStripeClient(
+            [FakeStripeResponse(200, {"id": "pi_123", "status": "succeeded"})]
+        )
+        adapter = MPPStripeAdapter(secret_key="sk_test_123", http_client=client)
+
+        challenge_header = (
+            "Payment "
+            f'id="{challenge["id"]}", '
+            f'realm="{challenge["realm"]}", '
+            'method="stripe", '
+            'intent="charge", '
+            f'request="{challenge["request"]}", '
+            f'expires="{challenge["expires"]}"'
+        )
+        authorization = "Payment " + build_payment_receipt_header(credential)
+
+        receipt = await adapter.execute(
+            PaymentChallenge(
+                type="mpp",
+                amount=1.0,
+                headers={
+                    "WWW-Authenticate": challenge_header,
+                    "Authorization": authorization,
+                },
+            ),
+            DummyWallet(),
+        )
+
+        self.assertEqual(receipt.protocol, "mpp")
+        self.assertEqual(receipt.amount, 1.0)
+        self.assertEqual(receipt.currency, "USD")
+        self.assertEqual(receipt.extra["payment_intent_id"], "pi_123")
+        self.assertEqual(receipt.extra["receipt"]["method"], "stripe")
+        self.assertEqual(client.calls[0]["url"], "/v1/payment_intents")
+        self.assertEqual(
+            client.calls[0]["headers"]["Idempotency-Key"], "chlg_123_spt_123"
+        )
+        self.assertEqual(client.calls[0]["data"]["shared_payment_granted_token"], "spt_123")
+        self.assertEqual(client.calls[0]["data"]["metadata[product]"], "api")
+
+    async def test_mpp_adapter_refund_uses_payment_intent(self) -> None:
+        client = FakeStripeClient([FakeStripeResponse(200, {"id": "re_123"})])
+        adapter = MPPStripeAdapter(secret_key="sk_test_123", http_client=client)
+        session = PaymentSession(
+            job_id="job_123",
+            adapter_id="stripe_mpp",
+            challenge=PaymentChallenge(type="mpp", extra={}),
+            receipt=PaymentReceipt(
+                protocol="mpp",
+                extra={"payment_intent_id": "pi_123"},
+            ),
+        )
+
+        await adapter.refund(session, "customer asked nicely")
+
+        self.assertEqual(client.calls[0]["url"], "/v1/refunds")
+        self.assertEqual(client.calls[0]["data"]["payment_intent"], "pi_123")
+        self.assertEqual(
+            client.calls[0]["data"]["reason"], "requested_by_customer"
+        )
+
+    def test_mpp_header_helpers_parse_and_encode(self) -> None:
+        header = (
+            'Payment id="ch_1", realm="seller.example", method="stripe", '
+            'intent="charge", request="abc123", expires="2099-01-01T00:00:00Z"'
+        )
+        parsed = parse_payment_challenge_header(header)
+        self.assertEqual(parsed["id"], "ch_1")
+        self.assertEqual(parsed["method"], "stripe")
+
+        token = build_payment_receipt_header(
+            {"challenge": {"id": "ch_1"}, "payload": {"spt": "spt_123"}}
+        )
+        auth = parse_payment_authorization_header(f"Payment {token}")
+        self.assertEqual(auth["payload"]["spt"], "spt_123")
+        self.assertTrue(token)
 
 
 class EscrowAdapterTests(unittest.IsolatedAsyncioTestCase):
