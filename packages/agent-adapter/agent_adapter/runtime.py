@@ -22,6 +22,7 @@ from agent_adapter.events import (
     record_inbound_event,
 )
 from agent_adapter.extensions import ExtensionRegistry, load_extensions
+from agent_adapter.drivers import DriverRegistry, load_drivers
 from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.payments import PaymentRegistry, load_payment_registry
 from agent_adapter.store.database import Database
@@ -275,6 +276,7 @@ class RuntimeContext:
     secrets: SecretsStore
     state: StateStore
     registry: CapabilityRegistry
+    drivers: DriverRegistry
     payments: PaymentRegistry
     extensions: ExtensionRegistry
     job_engine: JobEngine
@@ -293,6 +295,7 @@ class RuntimeContext:
             "wallet": await self.wallet.get_address(),
             "balances": balances,
             "registered_platforms": await self.list_platforms(),
+            "platform_drivers": await self.list_drivers(),
             "capabilities": await self.list_capabilities(),
             "active_jobs": len(active_jobs),
             "jobs_completed_today": (await self.job_engine.count_today()).get(
@@ -404,6 +407,9 @@ class RuntimeContext:
         cols = [desc[0] for desc in cursor.description]
         return [dict(zip(cols, row)) for row in rows]
 
+    async def list_drivers(self) -> list[dict[str, Any]]:
+        return self.drivers.list_drivers()
+
     async def list_decisions(self, limit: int = 50) -> list[dict[str, Any]]:
         cursor = await self.db.conn.execute(
             "SELECT * FROM decision_log ORDER BY id DESC LIMIT ?", (limit,)
@@ -477,6 +483,7 @@ class RuntimeContext:
             "active_jobs": status["active_jobs"],
             "jobs_completed_today": status["jobs_completed_today"],
             "registered_platforms": platforms,
+            "platform_drivers": await self.list_drivers(),
             "heartbeats": heartbeats,
             "heartbeats_total": heartbeat_count,
             "events": events,
@@ -806,7 +813,8 @@ class RuntimeContext:
             custom_prompt=custom_prompt if append_to_default else "",
             system_prompt=custom_prompt if not append_to_default else DEFAULT_SYSTEM_PROMPT,
             max_tool_rounds=agent_cfg.get("max_tool_rounds", 20),
-            extra_tools=self.registry.to_tool_definitions(),
+            extra_tools=self.registry.to_tool_definitions()
+            + self.drivers.to_tool_definitions(),
             usage_recorder=self.record_llm_usage,
         )
         return self._agent_loop
@@ -827,6 +835,7 @@ class RuntimeContext:
             await asyncio.sleep(interval)
 
     async def close(self) -> None:
+        await self.drivers.shutdown()
         await self.handlers.close()
         await self.db.close()
 
@@ -864,6 +873,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
 
     extensions = await load_extensions(config.get("extensions"), runtime=None)
     job_engine = JobEngine(db, extensions)
+    drivers = DriverRegistry()
 
     payments = load_payment_registry(config.get("payments"), wallet=wallet)
 
@@ -882,6 +892,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
         secrets=secrets,
         state=state,
         registry=registry,
+        drivers=drivers,
         payments=payments,
         extensions=extensions,
         job_engine=job_engine,
@@ -892,6 +903,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
             db=db,
             job_engine=job_engine,
             capability_registry=registry,
+            driver_registry=drivers,
             x402_http_client=x402_http_client,
             payments=payments,
         ),
@@ -899,4 +911,5 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
         stale_capabilities=stale_capabilities,
     )
     runtime.handlers._whoami_fn = runtime.whoami
+    await load_drivers(config.get("drivers"), runtime=runtime, registry=drivers)
     return runtime

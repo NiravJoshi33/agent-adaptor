@@ -54,52 +54,57 @@ paths:
     )
 
 
-def _write_config(path: Path, spec_path: Path) -> None:
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "adapter": {
-                    "name": "test-agent",
-                    "dataDir": str(path.parent / "data"),
-                    "dashboard": {"bind": "127.0.0.1", "port": 9090},
-                },
-                "wallet": {
-                    "provider": "dummy",
-                    "config": {
-                        "module": "tests.dummy_plugins",
-                        "class_name": "DummyWalletPlugin",
-                        "address": "cli-wallet",
-                        "sol": 3.0,
-                        "usdc": 11.5,
-                    },
-                },
-                "agent": {
-                    "provider": "openrouter",
-                    "model": "openai/gpt-oss-120b",
-                    "apiKey": "test-key",
-                    "systemPromptFile": str(path.parent / "prompts" / "system.md"),
-                    "appendToDefault": True,
-                    "costs": {
-                        "input_per_1m_tokens": 5.0,
-                        "output_per_1m_tokens": 15.0,
-                        "currency": "USD",
-                    },
-                },
-                "capabilities": {
-                    "source": {"type": "openapi", "url": str(spec_path)},
-                    "pricing": {
-                        "get_report": {
-                            "model": "per_call",
-                            "amount": 0.01,
-                            "enabled": True,
-                        }
-                    },
-                },
-                "payments": [{"type": "free"}],
+def _write_config(path: Path, spec_path: Path, *, include_driver: bool = False) -> None:
+    config = {
+        "adapter": {
+            "name": "test-agent",
+            "dataDir": str(path.parent / "data"),
+            "dashboard": {"bind": "127.0.0.1", "port": 9090},
+        },
+        "wallet": {
+            "provider": "dummy",
+            "config": {
+                "module": "tests.dummy_plugins",
+                "class_name": "DummyWalletPlugin",
+                "address": "cli-wallet",
+                "sol": 3.0,
+                "usdc": 11.5,
             },
-            sort_keys=False,
-        )
-    )
+        },
+        "agent": {
+            "provider": "openrouter",
+            "model": "openai/gpt-oss-120b",
+            "apiKey": "test-key",
+            "systemPromptFile": str(path.parent / "prompts" / "system.md"),
+            "appendToDefault": True,
+            "costs": {
+                "input_per_1m_tokens": 5.0,
+                "output_per_1m_tokens": 15.0,
+                "currency": "USD",
+            },
+        },
+        "capabilities": {
+            "source": {"type": "openapi", "url": str(spec_path)},
+            "pricing": {
+                "get_report": {
+                    "model": "per_call",
+                    "amount": 0.01,
+                    "enabled": True,
+                }
+            },
+        },
+        "payments": [{"type": "free"}],
+    }
+    if include_driver:
+        config["drivers"] = [
+            {
+                "module": "tests.dummy_plugins",
+                "class_name": "DummyPlatformDriver",
+                "config": {"label": "TaskNet Driver"},
+            }
+        ]
+
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
     prompt_dir = path.parent / "prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     (prompt_dir / "system.md").write_text("Keep bids conservative.")
@@ -287,6 +292,9 @@ class CLITests(unittest.TestCase):
                 "agent_adapter.extensions": [
                     FakeEntryPoint("custom-ext", "tests.test_management_surface:TestExtension")
                 ],
+                "agent_adapter.drivers": [
+                    FakeEntryPoint("custom-driver", "tests.dummy_plugins:DummyPlatformDriver")
+                ],
             }
         )
 
@@ -298,6 +306,22 @@ class CLITests(unittest.TestCase):
         self.assertEqual(payload["wallet"][0]["id"], "custom-wallet")
         self.assertEqual(payload["payment"][0]["id"], "custom-pay")
         self.assertEqual(payload["extension"][0]["id"], "custom-ext")
+        self.assertEqual(payload["driver"][0]["id"], "custom-driver")
+
+    def test_cli_drivers_list_reports_configured_driver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "openapi.yaml"
+            config_path = root / "agent-adapter.yaml"
+            _write_openapi_spec(spec_path)
+            _write_config(config_path, spec_path, include_driver=True)
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "drivers", "list"])
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["drivers"][0]["name"], "dummy-driver")
+            self.assertEqual(payload["drivers"][0]["namespace"], "drv_dummy")
 
 
 class TestExtension:
@@ -650,3 +674,45 @@ paths:
             self.assertEqual(len(extensions._extensions), 1)
             self.assertIsInstance(extensions._extensions[0], TestExtension)
             self.assertIs(extensions._extensions[0].runtime, self.runtime)
+
+    async def test_runtime_can_load_and_execute_configured_driver_tools(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path, include_driver=True)
+        self.runtime = await create_runtime(self.config_path)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
+            base_url="http://testserver",
+        )
+
+        status = (await self.client.get("/manage/status")).json()
+        self.assertEqual(status["platform_drivers"][0]["name"], "dummy-driver")
+
+        drivers = (await self.client.get("/manage/drivers")).json()["drivers"]
+        self.assertEqual(drivers[0]["tools"], ["drv_dummy__register"])
+
+        result = json.loads(
+            await self.runtime.handlers.dispatch(
+                "drv_dummy__register",
+                {"platform_url": "https://tasknet.example"},
+            )
+        )
+        self.assertTrue(result["registered"])
+        self.assertEqual(result["driver"], "dummy-driver")
+
+        platforms = await self.runtime.list_platforms()
+        self.assertEqual(platforms[0]["base_url"], "https://tasknet.example")
+
+        agent = await self.runtime.ensure_agent_loop()
+        assert agent is not None
+        self.assertIn(
+            "drv_dummy__register",
+            [tool.name for tool in agent._extra_tools],
+        )

@@ -32,6 +32,7 @@ execute them, deliver results, and manage payments — all autonomously.
 - state__set / state__get / state__list: Persist operational data across restarts.
 - wallet__get_address / wallet__get_balance / wallet__sign_message: Wallet operations for identity and payments.
 - pay_escrow__prepare_lock / pay_escrow__sign_and_submit / pay_escrow__check_status: Handle platform-supplied Solana escrow transaction flows.
+- drv__*: Use optional platform driver tools when installed for complex platform-specific choreography.
 - cap__*: Execute your capabilities against the target service.
 
 ## Rules

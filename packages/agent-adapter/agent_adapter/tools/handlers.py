@@ -19,6 +19,7 @@ from agent_adapter.events import (
 )
 from agent_adapter.capabilities.openapi import fetch_and_parse
 from agent_adapter.capabilities.registry import CapabilityRegistry
+from agent_adapter.drivers.registry import DriverRegistry
 from agent_adapter.payments.registry import PaymentRegistry
 from agent_adapter.store.database import Database
 from agent_adapter.store.secrets import SecretsStore
@@ -41,6 +42,7 @@ class ToolHandlers:
         whoami_fn: Any = None,
         x402_http_client: Any = None,
         capability_registry: CapabilityRegistry | None = None,
+        driver_registry: DriverRegistry | None = None,
         payments: PaymentRegistry | None = None,
         plain_http_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -52,6 +54,7 @@ class ToolHandlers:
         self._whoami_fn = whoami_fn
         self._x402_http_client = x402_http_client
         self._capability_registry = capability_registry
+        self._driver_registry = driver_registry
         self._payments = payments
         self._owns_plain_http_client = plain_http_client is None
         self._plain_http_client = plain_http_client or httpx.AsyncClient(
@@ -69,6 +72,9 @@ class ToolHandlers:
         is_dynamic_capability = False
         if handler is None and tool_name.startswith("cap__"):
             handler = self._handle_capability_tool
+            is_dynamic_capability = True
+        if handler is None and tool_name.startswith("drv_"):
+            handler = self._handle_driver_tool
             is_dynamic_capability = True
         if handler is None:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -472,6 +478,13 @@ class ToolHandlers:
                     job_id, error=str(exc), payment_status="pending"
                 )
             raise
+
+    async def _handle_driver_tool(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._driver_registry is None:
+            raise ValueError("No driver registry configured")
+        return await self._driver_registry.execute(tool_name, args)
 
     async def _execute_mcp_capability(
         self, capability: Any, args: dict[str, Any]

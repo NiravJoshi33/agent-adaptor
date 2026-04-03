@@ -14,6 +14,7 @@ from agent_adapter.agent.loop import AgentLoop
 from agent_adapter.capabilities.mcp import MCP_PROTOCOL_VERSION, fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
+from agent_adapter.drivers import DriverRegistry
 from agent_adapter.payments import load_payment_registry
 from agent_adapter.plugins.discovery import list_all_plugins
 from agent_adapter.store.database import Database
@@ -24,7 +25,7 @@ from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.tools.definitions import build_tool_list
 from agent_adapter.tools.handlers import ToolHandlers
 from agent_adapter_contracts.payments import PaymentChallenge
-from agent_adapter_contracts.types import Capability, PricingConfig
+from agent_adapter_contracts.types import Capability, PricingConfig, ToolDefinition
 from payment_escrow import EscrowAdapter
 from solders.hash import Hash
 from solders.keypair import Keypair
@@ -236,6 +237,42 @@ class DummyExtension:
 
     async def initialize(self, runtime) -> None:
         self.initialized_with = runtime
+
+
+class DummyDriver:
+    def __init__(self) -> None:
+        self.initialized_with = None
+
+    @property
+    def name(self) -> str:
+        return "dummy-driver"
+
+    @property
+    def namespace(self) -> str:
+        return "drv_dummy"
+
+    @property
+    def tools(self):
+        return [
+            ToolDefinition(
+                name="drv_dummy__register",
+                description="Register with a dummy driver",
+                input_schema={
+                    "type": "object",
+                    "properties": {"platform_url": {"type": "string"}},
+                    "required": ["platform_url"],
+                },
+            )
+        ]
+
+    async def initialize(self, runtime) -> None:
+        self.initialized_with = runtime
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def execute(self, tool_name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"tool": tool_name, "args": args, "driver": self.name}
 
 
 class OpenAPIParsingTests(unittest.TestCase):
@@ -610,6 +647,39 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs[0]["payment_amount"], 0.25)
         self.assertEqual(jobs[0]["payment_status"], "settled")
 
+    async def test_dynamic_driver_tool_dispatches_and_builds_agent_tools(self) -> None:
+        registry = DriverRegistry()
+        driver = DummyDriver()
+        await driver.initialize({"runtime": "stub"})
+        registry.register(driver)
+
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            driver_registry=registry,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        tools = build_tool_list(extra_tools=registry.to_tool_definitions())
+        self.assertTrue(
+            any(t["function"]["name"] == "drv_dummy__register" for t in tools)
+        )
+
+        raw = await handlers.dispatch(
+            "drv_dummy__register",
+            {"platform_url": "https://tasknet.example"},
+        )
+        result = json.loads(raw)
+
+        self.assertEqual(result["driver"], "dummy-driver")
+        self.assertEqual(result["tool"], "drv_dummy__register")
+        self.assertEqual(
+            result["args"]["platform_url"], "https://tasknet.example"
+        )
+
     async def test_dynamic_capability_tool_marks_failed_job_for_error_response(self) -> None:
         registry = CapabilityRegistry()
         registry.register(
@@ -770,6 +840,11 @@ class LoaderTests(unittest.TestCase):
                 "agent_adapter.extensions": [
                     FakeEntryPoint("custom-ext", "tests.test_runtime_unit:DummyExtension")
                 ],
+                "agent_adapter.drivers": [
+                    FakeEntryPoint(
+                        "custom-driver", "tests.dummy_plugins:DummyPlatformDriver"
+                    )
+                ],
             }
         )
         with patch("agent_adapter.plugins.discovery.entry_points", return_value=fake_eps):
@@ -778,6 +853,7 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(plugins["wallet"][0]["id"], "custom-wallet")
         self.assertEqual(plugins["payment"][0]["id"], "custom-pay")
         self.assertEqual(plugins["extension"][0]["id"], "custom-ext")
+        self.assertEqual(plugins["driver"][0]["id"], "custom-driver")
 
 
 class EscrowAdapterTests(unittest.IsolatedAsyncioTestCase):

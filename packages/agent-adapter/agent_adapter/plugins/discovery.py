@@ -9,6 +9,7 @@ ENTRY_POINT_GROUPS = {
     "wallet": "agent_adapter.wallets",
     "payment": "agent_adapter.payments",
     "extension": "agent_adapter.extensions",
+    "driver": "agent_adapter.drivers",
 }
 
 

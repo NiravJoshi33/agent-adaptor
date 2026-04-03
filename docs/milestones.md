@@ -116,7 +116,7 @@ Contracts (ABC definitions — the stable center)
 | 23  | Mostly done | **Dashboard — Metrics page** — Charts, export to CSV                                  | §15.3         | Needs real data to be meaningful                         |
 | 24  | Done | **MCP server ingestion** — Second capability source type                              | §4.1          | Broadens the story but OpenAPI is enough for demo        |
 | 25  | Pending | **MPP/Stripe adapter** — Fiat payment rails                                           | §7.4          | Nice for completeness, not hackathon-critical            |
-| 26  | Pending | **Platform driver interface** — Plugin API for community drivers                      | §13.4         | Extensibility story is covered by wallet/payment plugins |
+| 26  | Done | **Platform driver interface** — Plugin API for community drivers                      | §13.4         | Extensibility story is covered by wallet/payment plugins |
 | 27  | Partial | **Optional tools** — SSE listener, heartbeat, webhook receiver, notifications         | §12.5         | Operational polish                                       |
 | 28  | Pending | **Dashboard — Prompt editor** — History, diff view, test against examples             | §10.5         | UX polish                                                |
 | 29  | Partial | **Dashboard — Wallet page** — Tx history, export/import flows, faucet links           | §15.3         | Nice UX but CLI covers it                                |

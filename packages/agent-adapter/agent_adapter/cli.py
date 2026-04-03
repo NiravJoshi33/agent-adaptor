@@ -71,6 +71,10 @@ def _parser() -> argparse.ArgumentParser:
     metrics_daily = metrics_sub.add_parser("daily")
     metrics_daily.add_argument("--days", type=int, default=14)
 
+    drivers = sub.add_parser("drivers")
+    drivers_sub = drivers.add_subparsers(dest="drivers_command", required=True)
+    drivers_sub.add_parser("list")
+
     plugins = sub.add_parser("plugins")
     plugins_sub = plugins.add_subparsers(dest="plugins_command", required=True)
     plugins_sub.add_parser("list")
@@ -238,6 +242,16 @@ async def _run_metrics_command(args: argparse.Namespace) -> Any:
         await runtime.close()
 
 
+async def _run_drivers_command(args: argparse.Namespace) -> Any:
+    runtime = await create_runtime(args.config)
+    try:
+        if args.drivers_command == "list":
+            return {"drivers": await runtime.list_drivers()}
+        raise ValueError(f"Unknown drivers command: {args.drivers_command}")
+    finally:
+        await runtime.close()
+
+
 def _run_plugins_command(args: argparse.Namespace) -> Any:
     if args.plugins_command == "list":
         return list_all_plugins()
@@ -302,6 +316,9 @@ def app(argv: list[str] | None = None) -> None:
         return
     if args.command == "metrics":
         _print(asyncio.run(_run_metrics_command(args)))
+        return
+    if args.command == "drivers":
+        _print(asyncio.run(_run_drivers_command(args)))
         return
     if args.command == "plugins":
         _print(_run_plugins_command(args))
