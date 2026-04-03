@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
+import io
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -15,7 +17,12 @@ from agent_adapter.capabilities.manual import parse_manual_definitions
 from agent_adapter.capabilities.mcp import fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import fetch_and_parse, parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
-from agent_adapter.config import apply_pricing_overlay, load_config, update_agent_config
+from agent_adapter.config import (
+    apply_pricing_overlay,
+    load_config,
+    update_agent_config,
+    update_wallet_config,
+)
 from agent_adapter.events import (
     acknowledge_inbound_events,
     list_inbound_events,
@@ -291,10 +298,12 @@ class RuntimeContext:
         active_jobs = await self.job_engine.list_active()
         earnings = await self.job_engine.earnings_today()
         balances = await self.wallet.get_balance()
+        low_balance = await self.check_low_balance(balances=balances)
         return {
             "adapter_name": self.config.get("adapter", {}).get("name", "agent-adapter"),
             "wallet": await self.wallet.get_address(),
             "balances": balances,
+            "low_balance": low_balance,
             "registered_platforms": await self.list_platforms(),
             "platform_drivers": await self.list_drivers(),
             "capabilities": await self.list_capabilities(),
@@ -411,6 +420,63 @@ class RuntimeContext:
         rows = await cursor.fetchall()
         cols = [desc[0] for desc in cursor.description]
         return [dict(zip(cols, row)) for row in rows]
+
+    async def add_platform(
+        self,
+        base_url: str,
+        *,
+        platform_name: str = "",
+        driver: str = "",
+    ) -> dict[str, Any]:
+        if driver:
+            selected = next(
+                (
+                    item
+                    for item in self.drivers.list_drivers()
+                    if driver in {item["name"], item["namespace"]}
+                ),
+                None,
+            )
+            if selected is None:
+                raise KeyError(driver)
+            register_tool = next(
+                (tool for tool in selected["tools"] if tool.endswith("__register")),
+                None,
+            )
+            if register_tool is None:
+                raise ValueError(f"Driver {selected['name']} does not expose a register tool")
+            result = json.loads(
+                await self.handlers.dispatch(register_tool, {"platform_url": base_url})
+            )
+            return {
+                "base_url": base_url,
+                "driver": selected["name"],
+                "registration_method": "driver",
+                **result,
+            }
+
+        payload = {
+            "name": platform_name or base_url,
+            "agent_id": await self.wallet.get_address(),
+        }
+        await self.handlers.dispatch(
+            "state__set",
+            {
+                "namespace": "platforms",
+                "key": base_url,
+                "data": payload,
+            },
+        )
+        platforms = await self.list_platforms()
+        return next(
+            (platform for platform in platforms if platform["base_url"] == base_url),
+            {
+                "base_url": base_url,
+                "platform_name": payload["name"],
+                "agent_id": payload["agent_id"],
+                "registration_status": "registered",
+            },
+        )
 
     async def list_drivers(self) -> list[dict[str, Any]]:
         return self.drivers.list_drivers()
@@ -635,6 +701,141 @@ class RuntimeContext:
             "currency": currency,
         }
 
+    async def export_metrics(self, days: int = 30, fmt: str = "csv") -> str:
+        fmt = fmt.lower()
+        summary = await self.get_metrics_summary(days)
+        series = await self.get_metrics_timeseries(days)
+        if fmt == "json":
+            return json.dumps(
+                {"summary": summary, "series": series},
+                indent=2,
+                sort_keys=True,
+            )
+        if fmt != "csv":
+            raise ValueError(f"Unsupported metrics export format: {fmt}")
+
+        buffer = io.StringIO()
+        writer = csv.DictWriter(
+            buffer,
+            fieldnames=["day", "revenue", "llm_cost", "stable_margin"],
+        )
+        writer.writeheader()
+        writer.writerows(series)
+        return buffer.getvalue().strip()
+
+    async def export_wallet_secret(self) -> dict[str, Any]:
+        provider = str(self.config.get("wallet", {}).get("provider", ""))
+        if provider != "solana-raw" and not hasattr(self.wallet, "keypair"):
+            raise NotImplementedError(
+                f'Wallet provider "{provider}" does not support private-key export'
+            )
+
+        if hasattr(self.wallet, "keypair"):
+            secret_key = str(self.wallet.keypair)
+        elif hasattr(self.wallet, "secret_bytes"):
+            from solders.keypair import Keypair
+
+            secret_key = str(Keypair.from_bytes(self.wallet.secret_bytes))
+        else:
+            raise NotImplementedError(
+                f'Wallet provider "{provider}" does not expose exportable key material'
+            )
+
+        return {
+            "provider": provider or "solana-raw",
+            "encoding": "base58",
+            "secret_key": secret_key,
+        }
+
+    async def import_wallet_secret(self, secret_key: str) -> dict[str, Any]:
+        from solders.keypair import Keypair
+
+        keypair = Keypair.from_base58_string(secret_key.strip())
+        current_cfg = dict(self.config.get("wallet", {}).get("config", {}))
+        next_cfg = {
+            key: value
+            for key, value in current_cfg.items()
+            if key in {"rpc_url", "cluster"}
+        }
+        next_cfg["secret_key"] = secret_key.strip()
+        update_wallet_config(
+            self.config_path,
+            provider="solana-raw",
+            config_updates=next_cfg,
+            replace_config=True,
+        )
+        self.config = load_config(self.config_path)
+        return {
+            "provider": "solana-raw",
+            "address": str(keypair.pubkey()),
+            "encoding": "base58",
+        }
+
+    async def check_low_balance(
+        self,
+        *,
+        balances: dict[str, Any] | None = None,
+        emit: bool = True,
+    ) -> dict[str, Any]:
+        raw_thresholds = (
+            self.config.get("adapter", {}).get("lowBalanceThresholds", {}) or {}
+        )
+        thresholds = {
+            str(asset).lower(): float(value)
+            for asset, value in raw_thresholds.items()
+            if value is not None
+        }
+        if not thresholds:
+            return {
+                "active": False,
+                "thresholds": {},
+                "below_threshold": {},
+            }
+
+        balance_map = balances or await self.wallet.get_balance()
+        below_threshold: dict[str, dict[str, float]] = {}
+        for asset, threshold in thresholds.items():
+            balance = float(
+                balance_map.get(asset, balance_map.get(asset.upper(), 0.0)) or 0.0
+            )
+            if balance <= threshold:
+                below_threshold[asset] = {
+                    "balance": balance,
+                    "threshold": threshold,
+                }
+
+        active = bool(below_threshold)
+        now = datetime.now(timezone.utc).isoformat()
+        previous = await self.state.get("alerts", "low_balance") or {}
+        payload = {
+            "wallet": await self.wallet.get_address(),
+            "balances": balance_map,
+            "thresholds": thresholds,
+            "below_threshold": below_threshold,
+            "detected_at": now,
+            "active": active,
+        }
+
+        if (
+            emit
+            and active
+            and (
+                not previous.get("active")
+                or previous.get("below_threshold") != below_threshold
+            )
+        ):
+            await self.extensions.emit(RuntimeEvent.ON_LOW_BALANCE, payload)
+
+        next_state = {
+            "active": active,
+            "thresholds": thresholds,
+            "below_threshold": below_threshold,
+            "last_checked_at": now,
+        }
+        if previous != next_state:
+            await self.state.set("alerts", "low_balance", next_state)
+        return payload
+
     async def get_metrics_summary(self, days: int = 30) -> dict[str, Any]:
         since = (
             datetime.now(timezone.utc) - timedelta(days=max(days - 1, 0))
@@ -830,6 +1031,7 @@ class RuntimeContext:
             return "Agent API key not configured; skipping agent loop."
         if self.agent_paused:
             return "Agent is paused."
+        await self.check_low_balance()
         try:
             return await agent.run_once(message)
         except Exception as exc:

@@ -44,7 +44,13 @@ def _parser() -> argparse.ArgumentParser:
 
     wallet = sub.add_parser("wallet")
     wallet_sub = wallet.add_subparsers(dest="wallet_command", required=True)
+    wallet_sub.add_parser("address")
     wallet_sub.add_parser("balance")
+    wallet_export = wallet_sub.add_parser("export")
+    wallet_export.add_argument("--yes", action="store_true")
+    wallet_export.add_argument("--output")
+    wallet_import = wallet_sub.add_parser("import")
+    wallet_import.add_argument("source")
 
     agent = sub.add_parser("agent")
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
@@ -70,6 +76,18 @@ def _parser() -> argparse.ArgumentParser:
     metrics_summary.add_argument("--days", type=int, default=30)
     metrics_daily = metrics_sub.add_parser("daily")
     metrics_daily.add_argument("--days", type=int, default=14)
+    metrics_export = metrics_sub.add_parser("export")
+    metrics_export.add_argument("--days", type=int, default=30)
+    metrics_export.add_argument("--format", choices=("csv", "json"), default="csv")
+    metrics_export.add_argument("--output")
+
+    platforms = sub.add_parser("platforms")
+    platforms_sub = platforms.add_subparsers(dest="platforms_command", required=True)
+    platforms_sub.add_parser("list")
+    platforms_add = platforms_sub.add_parser("add")
+    platforms_add.add_argument("url")
+    platforms_add.add_argument("--name", default="")
+    platforms_add.add_argument("--driver", default="")
 
     drivers = sub.add_parser("drivers")
     drivers_sub = drivers.add_subparsers(dest="drivers_command", required=True)
@@ -99,6 +117,13 @@ def _parser() -> argparse.ArgumentParser:
 
 def _print(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _emit(data: Any) -> None:
+    if isinstance(data, (dict, list)):
+        _print(data)
+        return
+    print(data)
 
 
 def _write_init_files(args: argparse.Namespace) -> dict[str, Any]:
@@ -161,10 +186,34 @@ async def _run_status(args: argparse.Namespace) -> dict[str, Any]:
         await runtime.close()
 
 
-async def _run_wallet_balance(args: argparse.Namespace) -> dict[str, Any]:
+async def _run_wallet_command(args: argparse.Namespace) -> Any:
     runtime = await create_runtime(args.config)
     try:
-        return {"address": await runtime.wallet.get_address(), "balances": await runtime.wallet.get_balance()}
+        if args.wallet_command == "address":
+            return {"address": await runtime.wallet.get_address()}
+        if args.wallet_command == "balance":
+            return {
+                "address": await runtime.wallet.get_address(),
+                "balances": await runtime.wallet.get_balance(),
+            }
+        if args.wallet_command == "export":
+            if not args.yes:
+                raise ValueError("wallet export requires --yes because it reveals private key material.")
+            exported = await runtime.export_wallet_secret()
+            if args.output:
+                Path(args.output).write_text(exported["secret_key"] + "\n")
+                return {
+                    "written": True,
+                    "output": str(Path(args.output).resolve()),
+                    "provider": exported["provider"],
+                    "encoding": exported["encoding"],
+                }
+            return exported
+        if args.wallet_command == "import":
+            source_path = Path(args.source)
+            secret = source_path.read_text().strip() if source_path.exists() else args.source.strip()
+            return await runtime.import_wallet_secret(secret)
+        raise ValueError(f"Unknown wallet command: {args.wallet_command}")
     finally:
         await runtime.close()
 
@@ -237,6 +286,17 @@ async def _run_metrics_command(args: argparse.Namespace) -> Any:
             return await runtime.get_metrics_summary(args.days)
         if args.metrics_command == "daily":
             return {"series": await runtime.get_metrics_timeseries(args.days)}
+        if args.metrics_command == "export":
+            content = await runtime.export_metrics(args.days, args.format)
+            if args.output:
+                Path(args.output).write_text(content + ("\n" if not content.endswith("\n") else ""))
+                return {
+                    "written": True,
+                    "output": str(Path(args.output).resolve()),
+                    "format": args.format,
+                    "days": args.days,
+                }
+            return content
         raise ValueError(f"Unknown metrics command: {args.metrics_command}")
     finally:
         await runtime.close()
@@ -248,6 +308,22 @@ async def _run_drivers_command(args: argparse.Namespace) -> Any:
         if args.drivers_command == "list":
             return {"drivers": await runtime.list_drivers()}
         raise ValueError(f"Unknown drivers command: {args.drivers_command}")
+    finally:
+        await runtime.close()
+
+
+async def _run_platforms_command(args: argparse.Namespace) -> Any:
+    runtime = await create_runtime(args.config)
+    try:
+        if args.platforms_command == "list":
+            return {"platforms": await runtime.list_platforms()}
+        if args.platforms_command == "add":
+            return await runtime.add_platform(
+                args.url,
+                platform_name=args.name,
+                driver=args.driver,
+            )
+        raise ValueError(f"Unknown platforms command: {args.platforms_command}")
     finally:
         await runtime.close()
 
@@ -303,7 +379,7 @@ def app(argv: list[str] | None = None) -> None:
         _print(asyncio.run(_run_status(args)))
         return
     if args.command == "wallet":
-        _print(asyncio.run(_run_wallet_balance(args)))
+        _emit(asyncio.run(_run_wallet_command(args)))
         return
     if args.command == "capabilities":
         _print(asyncio.run(_run_capabilities(args)))
@@ -315,7 +391,10 @@ def app(argv: list[str] | None = None) -> None:
         _print(asyncio.run(_run_prompt_command(args)))
         return
     if args.command == "metrics":
-        _print(asyncio.run(_run_metrics_command(args)))
+        _emit(asyncio.run(_run_metrics_command(args)))
+        return
+    if args.command == "platforms":
+        _print(asyncio.run(_run_platforms_command(args)))
         return
     if args.command == "drivers":
         _print(asyncio.run(_run_drivers_command(args)))

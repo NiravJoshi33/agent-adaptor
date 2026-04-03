@@ -36,14 +36,6 @@ async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
             await plugin.initialize()
         return plugin
 
-    discovered = discover_plugins("wallet")
-    if provider in discovered:
-        spec = discovered[provider]
-        plugin = _load_class(spec.module, spec.attr)(**config)
-        if hasattr(plugin, "initialize"):
-            await plugin.initialize()
-        return plugin
-
     if provider == "ows":
         from wallet_ows import OWSWalletPlugin
 
@@ -65,6 +57,14 @@ async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
         if secret:
             return SolanaRawWallet.from_base58(secret, rpc_url=rpc_url, cluster=cluster)
         return SolanaRawWallet.generate(rpc_url=rpc_url, cluster=cluster)
+
+    discovered = discover_plugins("wallet")
+    if provider in discovered:
+        spec = discovered[provider]
+        plugin = _load_class(spec.module, spec.attr)(**config)
+        if hasattr(plugin, "initialize"):
+            await plugin.initialize()
+        return plugin
 
     raise ValueError(
         f'Wallet provider "{provider}" not found. '

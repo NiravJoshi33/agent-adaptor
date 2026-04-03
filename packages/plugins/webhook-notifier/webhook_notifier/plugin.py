@@ -25,6 +25,7 @@ class WebhookNotifierExtension:
         self._hooks = hooks or [
             RuntimeEvent.ON_JOB_COMPLETE,
             RuntimeEvent.ON_JOB_FAILED,
+            RuntimeEvent.ON_LOW_BALANCE,
             RuntimeEvent.ON_PLATFORM_REGISTERED,
             RuntimeEvent.ON_CAPABILITY_DRIFT,
             RuntimeEvent.ON_AGENT_ERROR,

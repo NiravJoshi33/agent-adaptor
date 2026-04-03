@@ -25,8 +25,19 @@ def load_config(path: str | Path = "agent-adapter.yaml") -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Config not found: {p}")
+    return _resolve_env_vars(_load_raw_config(p))
+
+
+def _load_raw_config(path: str | Path) -> dict[str, Any]:
+    p = Path(path)
     with open(p) as f:
-        return _resolve_env_vars(yaml.safe_load(f))
+        return yaml.safe_load(f) or {}
+
+
+def _write_config(path: str | Path, config: dict[str, Any]) -> dict[str, Any]:
+    p = Path(path)
+    p.write_text(yaml.safe_dump(config, sort_keys=False))
+    return config
 
 
 def update_agent_config(
@@ -39,15 +50,37 @@ def update_agent_config(
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Config not found: {p}")
-    with open(p) as f:
-        config = yaml.safe_load(f) or {}
+    config = _load_raw_config(p)
     agent = config.setdefault("agent", {})
     if system_prompt_file is not None:
         agent["systemPromptFile"] = system_prompt_file
     if append_to_default is not None:
         agent["appendToDefault"] = append_to_default
-    p.write_text(yaml.safe_dump(config, sort_keys=False))
-    return config
+    return _write_config(p, config)
+
+
+def update_wallet_config(
+    path: str | Path,
+    *,
+    provider: str | None = None,
+    config_updates: dict[str, Any] | None = None,
+    replace_config: bool = False,
+) -> dict[str, Any]:
+    """Update wallet config fields while preserving unrelated YAML values."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config not found: {p}")
+    config = _load_raw_config(p)
+    wallet = config.setdefault("wallet", {})
+    if provider is not None:
+        wallet["provider"] = provider
+    current = wallet.get("config", {})
+    wallet["config"] = (
+        dict(config_updates or {})
+        if replace_config
+        else {**current, **(config_updates or {})}
+    )
+    return _write_config(p, config)
 
 
 def apply_pricing_overlay(

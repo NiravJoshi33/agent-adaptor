@@ -102,7 +102,7 @@ Contracts (ABC definitions — the stable center)
 | 18  | Done | **Provider-customizable system prompt** — File-based override, `appendToDefault` mode             | §10.4   | Shows the "no-code strategy tuning" angle  |
 | 19  | Done | **Spec change detection** — Hash-based diff, flag new/changed/stale capabilities                  | §4.3    | Shows production-readiness thinking        |
 | 20  | Done | **Management API** — REST endpoints backing the dashboard (FastAPI)                               | §15.4   | Enables programmatic control               |
-| 21  | Done | **CLI commands** — `capabilities list/price/enable`, `agent decisions`, `wallet balance`          | §14.3   | Clean developer UX for live demo           |
+| 21  | Done | **CLI commands** — capability management, `agent decisions`, `platforms list/add`, `wallet address/balance/export/import`, `metrics export` | §14.3   | Clean developer UX for live demo           |
 
 ---
 
@@ -113,11 +113,11 @@ Contracts (ABC definitions — the stable center)
 | #   | Status | Feature                                                                               | PRD Ref       | Notes                                                    |
 | --- | ------ | ------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------- |
 | 22  | Done | **Metrics & billing** — LLM cost tracking, profit margins, daily aggregation          | §11           | Important for real usage, not for demo                   |
-| 23  | Mostly done | **Dashboard — Metrics page** — Charts, export to CSV                                  | §15.3         | Needs real data to be meaningful                         |
+| 23  | Mostly done | **Dashboard — Metrics page** — Charts, export to CSV                                  | §15.3         | Charts landed; CSV export is available via CLI/API, not the dashboard UI yet |
 | 24  | Done | **MCP server ingestion** — Second capability source type                              | §4.1          | Broadens the story but OpenAPI is enough for demo        |
 | 25  | Done | **MPP/Stripe adapter** — Fiat payment rails                                           | §7.4          | Nice for completeness, not hackathon-critical            |
 | 26  | Done | **Platform driver interface** — Plugin API for community drivers                      | §13.4         | Extensibility story is covered by wallet/payment plugins |
-| 27  | Done | **Optional tools** — SSE listener, heartbeat, webhook receiver, notifications         | §12.5         | Operational polish                                       |
+| 27  | Done | **Optional tools** — SSE listener, heartbeat, webhook receiver, notifications, low-balance alerts | §12.5         | Operational polish                                       |
 | 28  | Pending | **Dashboard — Prompt editor** — History, diff view, test against examples             | §10.5         | UX polish                                                |
 | 29  | Partial | **Dashboard — Wallet page** — Tx history, export/import flows, faucet links           | §15.3         | Nice UX but CLI covers it                                |
 | 30  | Done | **Plugin discovery** — site-packages scan via `pyproject.toml` entry points            | Impl notes §5 | Explicit config is enough initially                      |

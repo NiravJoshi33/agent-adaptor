@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import httpx
 import yaml
+from solders.keypair import Keypair
 
 from agent_adapter import cli
 from agent_adapter.management import create_management_app
@@ -60,6 +61,9 @@ def _write_config(
     *,
     include_driver: bool = False,
     include_webhook_extension: bool = False,
+    wallet_provider: str = "dummy",
+    wallet_config: dict | None = None,
+    low_balance_thresholds: dict[str, float] | None = None,
 ) -> None:
     config = {
         "adapter": {
@@ -68,8 +72,9 @@ def _write_config(
             "dashboard": {"bind": "127.0.0.1", "port": 9090},
         },
         "wallet": {
-            "provider": "dummy",
-            "config": {
+            "provider": wallet_provider,
+            "config": wallet_config
+            or {
                 "module": "tests.dummy_plugins",
                 "class_name": "DummyWalletPlugin",
                 "address": "cli-wallet",
@@ -101,6 +106,8 @@ def _write_config(
         },
         "payments": [{"type": "free"}],
     }
+    if low_balance_thresholds:
+        config["adapter"]["lowBalanceThresholds"] = low_balance_thresholds
     if include_driver:
         config["drivers"] = [
             {
@@ -285,6 +292,155 @@ class CLITests(unittest.TestCase):
             self.assertEqual(len(series), 7)
             self.assertTrue(any(point["revenue"] == 0.75 for point in series))
 
+    def test_cli_wallet_platforms_and_metrics_export_commands_cover_provider_ops(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "openapi.yaml"
+            config_path = root / "agent-adapter.yaml"
+            export_path = root / "wallet.txt"
+            metrics_path = root / "metrics.csv"
+            first_keypair = Keypair()
+            second_keypair = Keypair()
+            _write_openapi_spec(spec_path)
+            _write_config(
+                config_path,
+                spec_path,
+                wallet_provider="solana-raw",
+                wallet_config={
+                    "secret_key": str(first_keypair),
+                    "rpc_url": "http://127.0.0.1:8899",
+                    "cluster": "devnet",
+                },
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "wallet", "address"])
+            address = json.loads(stdout.getvalue())
+            self.assertEqual(address["address"], str(first_keypair.pubkey()))
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "wallet",
+                        "export",
+                        "--yes",
+                        "--output",
+                        str(export_path),
+                    ]
+                )
+            exported = json.loads(stdout.getvalue())
+            self.assertTrue(exported["written"])
+            self.assertEqual(export_path.read_text().strip(), str(first_keypair))
+
+            import_path = root / "import.txt"
+            import_path.write_text(str(second_keypair))
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "wallet",
+                        "import",
+                        str(import_path),
+                    ]
+                )
+            imported = json.loads(stdout.getvalue())
+            self.assertEqual(imported["address"], str(second_keypair.pubkey()))
+
+            config = yaml.safe_load(config_path.read_text())
+            self.assertEqual(config["wallet"]["provider"], "solana-raw")
+            self.assertEqual(config["wallet"]["config"]["secret_key"], str(second_keypair))
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "platforms",
+                        "add",
+                        "https://tasknet.example",
+                        "--name",
+                        "TaskNet",
+                    ]
+                )
+            platform = json.loads(stdout.getvalue())
+            self.assertEqual(platform["base_url"], "https://tasknet.example")
+            self.assertEqual(platform["platform_name"], "TaskNet")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "platforms", "list"])
+            listed = json.loads(stdout.getvalue())
+            self.assertEqual(listed["platforms"][0]["base_url"], "https://tasknet.example")
+
+            async def seed_runtime() -> None:
+                runtime = await create_runtime(config_path)
+                try:
+                    job_id = await runtime.job_engine.create(
+                        capability="get_report",
+                        input_data={"report_id": "csv"},
+                        payment_protocol="x402",
+                        payment_amount=1.25,
+                    )
+                    await runtime.job_engine.mark_executing(job_id)
+                    await runtime.job_engine.mark_completed(job_id, output_hash="ok")
+                    await runtime.record_llm_usage(
+                        {
+                            "model": "openai/gpt-oss-120b",
+                            "prompt_tokens": 600,
+                            "completion_tokens": 200,
+                            "total_tokens": 800,
+                        }
+                    )
+                finally:
+                    await runtime.close()
+
+            asyncio.run(seed_runtime())
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "metrics",
+                        "export",
+                        "--format",
+                        "csv",
+                        "--days",
+                        "7",
+                    ]
+                )
+            csv_output = stdout.getvalue()
+            self.assertIn("day,revenue,llm_cost,stable_margin", csv_output)
+            self.assertIn("1.25", csv_output)
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "metrics",
+                        "export",
+                        "--format",
+                        "csv",
+                        "--days",
+                        "7",
+                        "--output",
+                        str(metrics_path),
+                    ]
+                )
+            export_meta = json.loads(stdout.getvalue())
+            self.assertTrue(export_meta["written"])
+            self.assertIn("stable_margin", metrics_path.read_text())
+
     def test_cli_plugins_list_shows_discovered_entry_points(self) -> None:
         class FakeEntryPoint:
             def __init__(self, name: str, value: str) -> None:
@@ -443,6 +599,18 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         timeseries = (await self.client.get("/manage/metrics/timeseries?days=7")).json()["series"]
         self.assertEqual(len(timeseries), 7)
         self.assertTrue(any(point["llm_cost"] > 0 for point in timeseries))
+
+        metrics_export = await self.client.get("/manage/metrics/export?days=7&format=csv")
+        self.assertEqual(metrics_export.status_code, 200)
+        self.assertIn("day,revenue,llm_cost,stable_margin", metrics_export.text)
+
+        added_platform = (
+            await self.client.post(
+                "/manage/platforms",
+                json={"url": "https://platform-api.example", "name": "Platform API"},
+            )
+        ).json()
+        self.assertEqual(added_platform["base_url"], "https://platform-api.example")
 
     async def test_management_api_updates_prompt_and_rebuilds_agent_loop(self) -> None:
         prompt = (await self.client.get("/manage/agent/prompt")).json()
@@ -813,3 +981,59 @@ paths:
         self.assertTrue(
             all(item["headers"].get("x-agent-adapter") == "test" for item in notifications)
         )
+
+    async def test_low_balance_event_emits_once_until_balance_recovers(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(
+            self.config_path,
+            self.spec_path,
+            include_webhook_extension=True,
+            low_balance_thresholds={"sol": 5.0, "usdc": 20.0},
+        )
+
+        notifications: list[dict] = []
+
+        async def fake_post(self, url, *, json=None, headers=None, **kwargs):
+            notifications.append(
+                {"url": url, "json": json or {}, "headers": headers or {}}
+            )
+            class Response:
+                status_code = 200
+            return Response()
+
+        with patch("webhook_notifier.plugin.httpx.AsyncClient.post", new=fake_post):
+            self.runtime = await create_runtime(self.config_path)
+            self.client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
+                base_url="http://testserver",
+            )
+
+            await self.runtime.whoami()
+            await self.runtime.whoami()
+            low_balance_hooks = [
+                item["json"]["hook"]
+                for item in notifications
+                if item["json"]["hook"] == "on_low_balance"
+            ]
+            self.assertEqual(low_balance_hooks, ["on_low_balance"])
+
+            self.runtime.wallet._balances = {"sol": 8.0, "usdc": 30.0}
+            await self.runtime.whoami()
+            self.runtime.wallet._balances = {"sol": 2.0, "usdc": 10.0}
+            await self.runtime.whoami()
+
+        low_balance_events = [
+            item["json"]
+            for item in notifications
+            if item["json"]["hook"] == "on_low_balance"
+        ]
+        self.assertEqual(len(low_balance_events), 2)
+        self.assertEqual(low_balance_events[0]["payload"]["below_threshold"]["sol"]["threshold"], 5.0)

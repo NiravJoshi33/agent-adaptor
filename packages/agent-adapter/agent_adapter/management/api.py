@@ -6,6 +6,7 @@ import json
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+from starlette.responses import PlainTextResponse
 
 from agent_adapter.management.dashboard import mount_dashboard
 from agent_adapter.runtime import RuntimeContext
@@ -23,6 +24,12 @@ class CapabilityPricingRequest(BaseModel):
 class PromptUpdateRequest(BaseModel):
     custom_prompt: str | None = None
     append_to_default: bool | None = None
+
+
+class PlatformAddRequest(BaseModel):
+    url: str
+    name: str = ""
+    driver: str = ""
 
 
 def create_management_app(runtime: RuntimeContext) -> FastAPI:
@@ -113,6 +120,10 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
     async def get_metrics(days: int = 30):
         return await runtime.get_metrics_summary(days)
 
+    @app.get("/manage/metrics/export", response_class=PlainTextResponse)
+    async def export_metrics(days: int = 30, format: str = "csv"):
+        return await runtime.export_metrics(days, format)
+
     @app.get("/manage/metrics/timeseries")
     async def get_metrics_timeseries(days: int = 14):
         return {"series": await runtime.get_metrics_timeseries(days)}
@@ -120,6 +131,17 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
     @app.get("/manage/platforms")
     async def list_platforms():
         return {"platforms": await runtime.list_platforms()}
+
+    @app.post("/manage/platforms")
+    async def add_platform(request: PlatformAddRequest):
+        try:
+            return await runtime.add_platform(
+                request.url,
+                platform_name=request.name,
+                driver=request.driver,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown driver: {request.driver}") from exc
 
     @app.get("/manage/drivers")
     async def list_drivers():
