@@ -1,0 +1,15 @@
+[project]
+name = "webhook-notifier"
+version = "0.1.0"
+description = "Webhook notification bridge extension for Agent Adapter"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "agent-adapter-contracts",
+    "httpx>=0.28,<1",
+]
+
+[project.entry-points."agent_adapter.extensions"]
+webhook-notifier = "webhook_notifier:WebhookNotifierExtension"
+
+[tool.uv.sources]
+agent-adapter-contracts = { workspace = true }

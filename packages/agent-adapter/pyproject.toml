@@ -21,6 +21,7 @@ bundled = [
     "payment-free",
     "payment-x402",
     "payment-escrow",
+    "webhook-notifier",
 ]
 
 [project.scripts]
@@ -33,3 +34,4 @@ wallet-ows = { workspace = true }
 payment-free = { workspace = true }
 payment-x402 = { workspace = true }
 payment-escrow = { workspace = true }
+webhook-notifier = { workspace = true }

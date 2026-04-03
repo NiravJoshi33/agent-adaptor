@@ -31,6 +31,7 @@ from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
 from agent_adapter.tools.handlers import ToolHandlers
 from agent_adapter.wallet.loader import load_wallet
+from agent_adapter_contracts.extensions import RuntimeEvent
 from agent_adapter_contracts.types import Capability, PricingConfig
 
 
@@ -394,7 +395,11 @@ class RuntimeContext:
         for cap in self.registry.list_all():
             if "drift_status" not in cap.__dict__:
                 cap.drift_status = "unchanged"  # type: ignore[attr-defined]
-        return await self.list_capabilities()
+        capabilities = await self.list_capabilities()
+        for cap in capabilities:
+            if cap.get("drift_status") not in {None, "", "unchanged"}:
+                await self.extensions.emit(RuntimeEvent.ON_CAPABILITY_DRIFT, cap)
+        return capabilities
 
     async def list_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
         return await self.job_engine.list_recent(limit)
@@ -825,7 +830,18 @@ class RuntimeContext:
             return "Agent API key not configured; skipping agent loop."
         if self.agent_paused:
             return "Agent is paused."
-        return await agent.run_once(message)
+        try:
+            return await agent.run_once(message)
+        except Exception as exc:
+            await self.extensions.emit(
+                RuntimeEvent.ON_AGENT_ERROR,
+                {
+                    "error": str(exc),
+                    "message": message,
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            raise
 
     async def run_agent_forever(self) -> None:
         interval = int(self.config.get("agent", {}).get("loopInterval", 30))
@@ -904,6 +920,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
             job_engine=job_engine,
             capability_registry=registry,
             driver_registry=drivers,
+            extensions=extensions,
             x402_http_client=x402_http_client,
             payments=payments,
         ),

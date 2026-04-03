@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from agent_adapter_contracts.extensions import RuntimeEvent
 from agent_adapter.store.database import Database
 from agent_adapter.extensions.registry import ExtensionRegistry
 
@@ -85,7 +86,7 @@ class JobEngine:
         if self._extensions:
             job = await self.get(job_id)
             if job:
-                await self._extensions.emit("on_job_complete", job)
+                await self._extensions.emit(RuntimeEvent.ON_JOB_COMPLETE, job)
 
     async def mark_failed(
         self, job_id: str, error: str = "", payment_status: str = "pending"
@@ -103,7 +104,7 @@ class JobEngine:
         if self._extensions:
             job = await self.get(job_id)
             if job:
-                await self._extensions.emit("on_job_failed", job)
+                await self._extensions.emit(RuntimeEvent.ON_JOB_FAILED, job)
 
     async def get(self, job_id: str) -> dict[str, Any] | None:
         cursor = await self._db.conn.execute(

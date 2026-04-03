@@ -12,6 +12,7 @@ members = [
     "payment-x402",
     "wallet-ows",
     "wallet-solana-raw",
+    "webhook-notifier",
 ]
 
 [[package]]
@@ -36,6 +37,7 @@ bundled = [
     { name = "payment-x402" },
     { name = "wallet-ows" },
     { name = "wallet-solana-raw" },
+    { name = "webhook-notifier" },
 ]
 
 [package.metadata]
@@ -53,6 +55,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.34" },
     { name = "wallet-ows", marker = "extra == 'bundled'", editable = "packages/plugins/wallet-ows" },
     { name = "wallet-solana-raw", marker = "extra == 'bundled'", editable = "packages/plugins/wallet-solana-raw" },
+    { name = "webhook-notifier", marker = "extra == 'bundled'", editable = "packages/plugins/webhook-notifier" },
 ]
 provides-extras = ["bundled"]
 
@@ -667,6 +670,21 @@ requires-dist = [
     { name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" },
     { name = "solana", specifier = ">=0.36" },
     { name = "solders", specifier = ">=0.26" },
+]
+
+[[package]]
+name = "webhook-notifier"
+version = "0.1.0"
+source = { editable = "packages/plugins/webhook-notifier" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" },
+    { name = "httpx", specifier = ">=0.28,<1" },
 ]
 
 [[package]]

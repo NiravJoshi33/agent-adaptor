@@ -54,7 +54,13 @@ paths:
     )
 
 
-def _write_config(path: Path, spec_path: Path, *, include_driver: bool = False) -> None:
+def _write_config(
+    path: Path,
+    spec_path: Path,
+    *,
+    include_driver: bool = False,
+    include_webhook_extension: bool = False,
+) -> None:
     config = {
         "adapter": {
             "name": "test-agent",
@@ -101,6 +107,17 @@ def _write_config(path: Path, spec_path: Path, *, include_driver: bool = False) 
                 "module": "tests.dummy_plugins",
                 "class_name": "DummyPlatformDriver",
                 "config": {"label": "TaskNet Driver"},
+            }
+        ]
+    if include_webhook_extension:
+        config["extensions"] = [
+            {
+                "module": "webhook_notifier",
+                "class_name": "WebhookNotifierExtension",
+                "config": {
+                    "url": "https://notify.example/events",
+                    "headers": {"x-agent-adapter": "test"},
+                },
             }
         ]
 
@@ -715,4 +732,84 @@ paths:
         self.assertIn(
             "drv_dummy__register",
             [tool.name for tool in agent._extra_tools],
+        )
+
+    async def test_webhook_notifier_extension_receives_runtime_events(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(
+            self.config_path,
+            self.spec_path,
+            include_webhook_extension=True,
+        )
+
+        notifications: list[dict] = []
+
+        async def fake_post(self, url, *, json=None, headers=None, **kwargs):
+            notifications.append(
+                {"url": url, "json": json or {}, "headers": headers or {}}
+            )
+            class Response:
+                status_code = 200
+            return Response()
+
+        with patch("webhook_notifier.plugin.httpx.AsyncClient.post", new=fake_post):
+            self.runtime = await create_runtime(self.config_path)
+            self.client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
+                base_url="http://testserver",
+            )
+
+            await self.runtime.handlers.dispatch(
+                "state__set",
+                {
+                    "namespace": "platforms",
+                    "key": "https://tasknet.example",
+                    "data": {"name": "TaskNet", "agent_id": "agent-bridge"},
+                },
+            )
+            job_id = await self.runtime.job_engine.create(
+                capability="get_report",
+                input_data={"report_id": "notify"},
+                payment_protocol="free",
+                payment_amount=0.0,
+            )
+            await self.runtime.job_engine.mark_failed(job_id, error="boom")
+
+            self.spec_path.write_text(
+                """
+openapi: 3.0.0
+servers:
+  - url: https://provider.example.com
+paths:
+  /reports/{report_id}:
+    parameters:
+      - name: report_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      operationId: get_report
+      summary: Changed report
+      responses:
+        '200':
+          description: ok
+"""
+            )
+            await self.runtime.refresh_capabilities()
+
+        hooks = [item["json"]["hook"] for item in notifications]
+        self.assertIn("on_platform_registered", hooks)
+        self.assertIn("on_job_failed", hooks)
+        self.assertIn("on_capability_drift", hooks)
+        self.assertTrue(
+            all(item["headers"].get("x-agent-adapter") == "test" for item in notifications)
         )

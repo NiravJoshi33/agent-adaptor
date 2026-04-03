@@ -8,7 +8,7 @@ import tempfile
 import unittest
 import base64
 import httpx
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from agent_adapter.agent.loop import AgentLoop
 from agent_adapter.capabilities.mcp import MCP_PROTOCOL_VERSION, fetch_mcp_capabilities
@@ -24,9 +24,11 @@ from agent_adapter.store.state import StateStore
 from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.tools.definitions import build_tool_list
 from agent_adapter.tools.handlers import ToolHandlers
+from agent_adapter_contracts.extensions import RuntimeEvent
 from agent_adapter_contracts.payments import PaymentChallenge
 from agent_adapter_contracts.types import Capability, PricingConfig, ToolDefinition
 from payment_escrow import EscrowAdapter
+from webhook_notifier import WebhookNotifierExtension
 from solders.hash import Hash
 from solders.keypair import Keypair
 from solders.message import to_bytes_versioned
@@ -273,6 +275,11 @@ class DummyDriver:
 
     async def execute(self, tool_name: str, args: dict[str, object]) -> dict[str, object]:
         return {"tool": tool_name, "args": args, "driver": self.name}
+
+
+class DummyRuntime:
+    def __init__(self) -> None:
+        self.config = {"adapter": {"name": "unit-runtime"}}
 
 
 class OpenAPIParsingTests(unittest.TestCase):
@@ -854,6 +861,28 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(plugins["payment"][0]["id"], "custom-pay")
         self.assertEqual(plugins["extension"][0]["id"], "custom-ext")
         self.assertEqual(plugins["driver"][0]["id"], "custom-driver")
+
+
+class NotificationExtensionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_webhook_notifier_sends_structured_payload(self) -> None:
+        extension = WebhookNotifierExtension(
+            url="https://notify.example/webhook",
+            headers={"x-runtime-token": "secret"},
+        )
+        extension._client.post = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        await extension.initialize(DummyRuntime())
+
+        await extension.on_job_failed({"id": "job_123", "status": "failed"})
+
+        extension._client.post.assert_awaited_once()  # type: ignore[attr-defined]
+        _, kwargs = extension._client.post.await_args  # type: ignore[attr-defined]
+        self.assertEqual(kwargs["json"]["hook"], RuntimeEvent.ON_JOB_FAILED.value)
+        self.assertEqual(kwargs["json"]["payload"]["id"], "job_123")
+        self.assertEqual(kwargs["json"]["runtime"], "unit-runtime")
+        self.assertEqual(kwargs["headers"]["x-runtime-token"], "secret")
+        self.assertEqual(extension.hooks[0], RuntimeEvent.ON_JOB_COMPLETE)
+
+        await extension.shutdown()
 
 
 class EscrowAdapterTests(unittest.IsolatedAsyncioTestCase):

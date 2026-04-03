@@ -8,16 +8,20 @@ Examples: Telegram notifier, Prometheus exporter, custom audit logger.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Any, TypeAlias
 
-ExtensionHook = Literal[
-    "on_job_complete",
-    "on_job_failed",
-    "on_low_balance",
-    "on_platform_registered",
-    "on_agent_error",
-    "on_capability_drift",
-]
+
+class RuntimeEvent(StrEnum):
+    ON_JOB_COMPLETE = "on_job_complete"
+    ON_JOB_FAILED = "on_job_failed"
+    ON_LOW_BALANCE = "on_low_balance"
+    ON_PLATFORM_REGISTERED = "on_platform_registered"
+    ON_AGENT_ERROR = "on_agent_error"
+    ON_CAPABILITY_DRIFT = "on_capability_drift"
+
+
+ExtensionHook: TypeAlias = RuntimeEvent | str
 
 
 class Extension(ABC):

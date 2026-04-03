@@ -25,6 +25,8 @@ from agent_adapter.store.database import Database
 from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
 from agent_adapter.jobs.engine import JobEngine
+from agent_adapter.extensions.registry import ExtensionRegistry
+from agent_adapter_contracts.extensions import RuntimeEvent
 from agent_adapter_contracts.payments import PaymentChallenge
 from agent_adapter_contracts.wallet import WalletPlugin
 
@@ -43,6 +45,7 @@ class ToolHandlers:
         x402_http_client: Any = None,
         capability_registry: CapabilityRegistry | None = None,
         driver_registry: DriverRegistry | None = None,
+        extensions: ExtensionRegistry | None = None,
         payments: PaymentRegistry | None = None,
         plain_http_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -55,6 +58,7 @@ class ToolHandlers:
         self._x402_http_client = x402_http_client
         self._capability_registry = capability_registry
         self._driver_registry = driver_registry
+        self._extensions = extensions
         self._payments = payments
         self._owns_plain_http_client = plain_http_client is None
         self._plain_http_client = plain_http_client or httpx.AsyncClient(
@@ -321,6 +325,16 @@ class ToolHandlers:
                     ),
                 )
                 await self._db.conn.commit()
+                if self._extensions:
+                    await self._extensions.emit(
+                        RuntimeEvent.ON_PLATFORM_REGISTERED,
+                        {
+                            "base_url": args["key"],
+                            "platform_name": data.get("name", args["key"]),
+                            "agent_id": data.get("agent_id", ""),
+                            "metadata": data,
+                        },
+                    )
             except Exception:
                 pass
 
