@@ -1,0 +1,11 @@
+[project]
+name = "payment-x402"
+version = "0.1.0"
+description = "x402 HTTP-native payment adapter for Agent Adapter"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-adapter-contracts",
+]
+
+[tool.uv.sources]
+agent-adapter-contracts = { workspace = true }

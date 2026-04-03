@@ -1,0 +1,28 @@
+[project]
+name = "agent-adapter"
+version = "0.1.0"
+description = "Agent Adapter Runtime — turns any API into an autonomous economic agent"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-adapter-contracts",
+]
+
+[project.optional-dependencies]
+bundled = [
+    "wallet-solana-raw",
+    "wallet-ows",
+    "payment-free",
+    "payment-x402",
+    "payment-escrow",
+]
+
+[project.scripts]
+agent-adapter = "agent_adapter.cli:app"
+
+[tool.uv.sources]
+agent-adapter-contracts = { workspace = true }
+wallet-solana-raw = { workspace = true }
+wallet-ows = { workspace = true }
+payment-free = { workspace = true }
+payment-x402 = { workspace = true }
+payment-escrow = { workspace = true }

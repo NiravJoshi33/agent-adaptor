@@ -1,0 +1,14 @@
+[project]
+name = "agent-adaptor"
+version = "0.1.0"
+description = "Agent Adapter Runtime — monorepo root"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-adapter[bundled]",
+]
+
+[tool.uv.sources]
+agent-adapter = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/agent-adapter", "packages/agent-adapter-contracts", "packages/plugins/*"]

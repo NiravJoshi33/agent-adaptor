@@ -1,0 +1,114 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[manifest]
+members = [
+    "agent-adapter",
+    "agent-adapter-contracts",
+    "agent-adaptor",
+    "payment-escrow",
+    "payment-free",
+    "payment-x402",
+    "wallet-ows",
+    "wallet-solana-raw",
+]
+
+[[package]]
+name = "agent-adapter"
+version = "0.1.0"
+source = { editable = "packages/agent-adapter" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+]
+
+[package.optional-dependencies]
+bundled = [
+    { name = "payment-escrow" },
+    { name = "payment-free" },
+    { name = "payment-x402" },
+    { name = "wallet-ows" },
+    { name = "wallet-solana-raw" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" },
+    { name = "payment-escrow", marker = "extra == 'bundled'", editable = "packages/plugins/payment-escrow" },
+    { name = "payment-free", marker = "extra == 'bundled'", editable = "packages/plugins/payment-free" },
+    { name = "payment-x402", marker = "extra == 'bundled'", editable = "packages/plugins/payment-x402" },
+    { name = "wallet-ows", marker = "extra == 'bundled'", editable = "packages/plugins/wallet-ows" },
+    { name = "wallet-solana-raw", marker = "extra == 'bundled'", editable = "packages/plugins/wallet-solana-raw" },
+]
+provides-extras = ["bundled"]
+
+[[package]]
+name = "agent-adapter-contracts"
+version = "0.1.0"
+source = { editable = "packages/agent-adapter-contracts" }
+
+[[package]]
+name = "agent-adaptor"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "agent-adapter", extra = ["bundled"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-adapter", extras = ["bundled"], editable = "packages/agent-adapter" }]
+
+[[package]]
+name = "payment-escrow"
+version = "0.1.0"
+source = { editable = "packages/plugins/payment-escrow" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" }]
+
+[[package]]
+name = "payment-free"
+version = "0.1.0"
+source = { editable = "packages/plugins/payment-free" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" }]
+
+[[package]]
+name = "payment-x402"
+version = "0.1.0"
+source = { editable = "packages/plugins/payment-x402" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" }]
+
+[[package]]
+name = "wallet-ows"
+version = "0.1.0"
+source = { editable = "packages/plugins/wallet-ows" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" }]
+
+[[package]]
+name = "wallet-solana-raw"
+version = "0.1.0"
+source = { editable = "packages/plugins/wallet-solana-raw" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" }]

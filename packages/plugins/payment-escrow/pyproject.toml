@@ -1,0 +1,11 @@
+[project]
+name = "payment-escrow"
+version = "0.1.0"
+description = "Solana escrow payment adapter for Agent Adapter (consumes external program via IDL)"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-adapter-contracts",
+]
+
+[tool.uv.sources]
+agent-adapter-contracts = { workspace = true }

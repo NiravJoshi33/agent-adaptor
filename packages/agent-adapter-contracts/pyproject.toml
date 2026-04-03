@@ -1,0 +1,5 @@
+[project]
+name = "agent-adapter-contracts"
+version = "0.1.0"
+description = "ABCs and shared types for Agent Adapter plugins"
+requires-python = ">=3.12"

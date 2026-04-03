@@ -1,0 +1,11 @@
+[project]
+name = "wallet-ows"
+version = "0.1.0"
+description = "Open Wallet Standard wallet plugin for Agent Adapter"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-adapter-contracts",
+]
+
+[tool.uv.sources]
+agent-adapter-contracts = { workspace = true }
