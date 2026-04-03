@@ -469,6 +469,54 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         pending = (await self.client.get("/manage/events?channel=tasknet")).json()["events"]
         self.assertEqual(pending, [])
 
+    async def test_operations_endpoint_and_dashboard_surface_wallet_events_and_heartbeats(self) -> None:
+        await self.runtime.handlers.dispatch(
+            "state__set",
+            {
+                "namespace": "platforms",
+                "key": "tasknet",
+                "data": {"name": "TaskNet", "agent_id": "agent-ops"},
+            },
+        )
+        await self.runtime.state.set(
+            "heartbeats",
+            "tasknet",
+            {
+                "url": "https://provider.example.com/heartbeat",
+                "method": "POST",
+                "status_code": 202,
+                "sent_at": "2026-04-03T12:00:00+00:00",
+                "response_body": {"ok": True, "platform": "TaskNet"},
+            },
+        )
+        await self.client.post(
+            "/webhooks/tasknet?event=task.created",
+            json={"task_id": "task-ops-1", "price": 2.5},
+            headers={"x-event-type": "task.created"},
+        )
+        job_id = await self.runtime.job_engine.create(
+            capability="get_report",
+            input_data={"report_id": "ops"},
+            payment_protocol="x402",
+            payment_amount=0.2,
+        )
+        await self.runtime.job_engine.mark_executing(job_id)
+
+        operations = (await self.client.get("/manage/operations")).json()
+        self.assertEqual(operations["wallet"], "cli-wallet")
+        self.assertEqual(operations["heartbeats_total"], 1)
+        self.assertEqual(operations["pending_events"], 1)
+        self.assertEqual(operations["registered_platforms"][0]["agent_id"], "agent-ops")
+        self.assertEqual(operations["events"][0]["payload"]["task_id"], "task-ops-1")
+        self.assertEqual(operations["recent_jobs"][0]["id"], job_id)
+
+        page = await self.client.get("/dashboard/operations")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Runtime Operations", page.text)
+        self.assertIn("Heartbeat Presence", page.text)
+        self.assertIn("Inbound Event Feed", page.text)
+        self.assertIn("&quot;page&quot;: &quot;operations&quot;", page.text)
+
     async def test_dashboard_pages_render_and_capability_refresh_surfaces_drift(self) -> None:
         overview = await self.client.get("/dashboard/")
         self.assertEqual(overview.status_code, 200)
@@ -500,6 +548,10 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Economic Observability", metrics_page.text)
         self.assertIn("Daily Revenue vs Cost", metrics_page.text)
         self.assertIn("&quot;page&quot;: &quot;metrics&quot;", metrics_page.text)
+
+        operations_page = await self.client.get("/dashboard/operations")
+        self.assertEqual(operations_page.status_code, 200)
+        self.assertIn("Runtime Operations", operations_page.text)
 
         self.spec_path.write_text(
             """

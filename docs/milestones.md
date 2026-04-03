@@ -66,22 +66,24 @@ Contracts (ABC definitions — the stable center)
 ## M1 — Must-Haves (Working Demo / Hackathon Submission)
 
 > The minimum to show an agent autonomously discovering work, getting paid, and executing capabilities.
+>
+> Status legend: `Done` = landed, `Mostly done` = core behavior landed with small UX gaps, `Partial` = meaningful slice landed but milestone not complete, `Pending` = not started or not enough shipped yet.
 
-| #   | Feature                                                                                                                                        | PRD Ref         | Why it's critical                                                          |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | -------------------------------------------------------------------------- |
-| 1   | **Monorepo scaffold** — Python monorepo with `packages/` layout, `pyproject.toml` per package, CLI `init` + `start` (typer/click)              | §14             | Skeleton everything attaches to                                            |
-| 2   | **agent-adapter-contracts** — `WalletPlugin` ABC, `PaymentAdapter` ABC, `Extension` ABC, shared dataclasses (`PaymentChallenge`, `Capability`, `Job`, etc.) | Impl notes      | The stable center — must exist before runtime or plugins                   |
-| 3   | **Wallet core** — Keypair generation, import, `wallet__get_address`, `wallet__get_balance`, `wallet__sign_message`, `wallet__sign_transaction` | §8              | OWS hackathon = wallet is the centerpiece                                  |
-| 4   | **wallet-ows plugin** — OWS wallet as default plugin (swappable via config), `wallet-solana-raw` as fallback                                   | §8, Impl notes §2 | Hackathon headline: OWS wallet is default, but the plugin arch lets you swap |
-| 5   | **SQLite persistence** — Schema setup (wallet, secrets, state, jobs, platforms tables)                                                         | §9              | Durable state across restarts                                              |
-| 6   | **Secrets & state tools** — `secrets__store/retrieve/delete`, `state__set/get/list`                                                            | §9.3            | Agent needs credential + state persistence                                 |
-| 7   | **Capability registry** — Manual definitions + OpenAPI spec ingestion, `cap__*` tool generation                                                | §4              | Agent needs to know what it can do                                         |
-| 8   | **Embedded agent loop** — LLM integration (Anthropic), system prompt, tool dispatch, `status__whoami`                                          | §10             | The brain — this IS the product                                            |
-| 9   | **Core tools** — `net__http_request`, `net__fetch_spec`                                                                                        | §12.2           | Agent's hands for interacting with platforms                               |
-| 10  | **payment-free plugin** — `canHandle("free")`, no-op settle/refund                                                                             | §7.5            | Minimum viable payment (unblocks demo)                                     |
-| 11  | **payment-x402 plugin** — Handle 402 responses, sign payment, retry with proof                                                                 | §7.2            | The OWS-relevant payment flow for the demo                                 |
-| 12  | **Job engine** — 4-state lifecycle (pending → executing → completed/failed), payment status linking                                            | §6              | Track work performed                                                       |
-| 13  | **Plugin loading** — `PaymentRegistry`, `ExtensionRegistry`, wallet loader; resolve from config → import plugin → register                     | Impl notes §1-5 | OWS judges will look for extensibility — swappable wallet is the key pitch |
+| #   | Status | Feature                                                                                                                                        | PRD Ref         | Why it's critical                                                          |
+| --- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | -------------------------------------------------------------------------- |
+| 1   | Done | **Monorepo scaffold** — Python monorepo with `packages/` layout, `pyproject.toml` per package, CLI `init` + `start` (typer/click)              | §14             | Skeleton everything attaches to                                            |
+| 2   | Done | **agent-adapter-contracts** — `WalletPlugin` ABC, `PaymentAdapter` ABC, `Extension` ABC, shared dataclasses (`PaymentChallenge`, `Capability`, `Job`, etc.) | Impl notes      | The stable center — must exist before runtime or plugins                   |
+| 3   | Done | **Wallet core** — Keypair generation, import, `wallet__get_address`, `wallet__get_balance`, `wallet__sign_message`, `wallet__sign_transaction` | §8              | OWS hackathon = wallet is the centerpiece                                  |
+| 4   | Done | **wallet-ows plugin** — OWS wallet as default plugin (swappable via config), `wallet-solana-raw` as fallback                                   | §8, Impl notes §2 | Hackathon headline: OWS wallet is default, but the plugin arch lets you swap |
+| 5   | Done | **SQLite persistence** — Schema setup (wallet, secrets, state, jobs, platforms tables)                                                         | §9              | Durable state across restarts                                              |
+| 6   | Done | **Secrets & state tools** — `secrets__store/retrieve/delete`, `state__set/get/list`                                                            | §9.3            | Agent needs credential + state persistence                                 |
+| 7   | Done | **Capability registry** — Manual definitions + OpenAPI spec ingestion, `cap__*` tool generation                                                | §4              | Agent needs to know what it can do                                         |
+| 8   | Done | **Embedded agent loop** — LLM integration (Anthropic), system prompt, tool dispatch, `status__whoami`                                          | §10             | The brain — this IS the product                                            |
+| 9   | Done | **Core tools** — `net__http_request`, `net__fetch_spec`                                                                                        | §12.2           | Agent's hands for interacting with platforms                               |
+| 10  | Done | **payment-free plugin** — `canHandle("free")`, no-op settle/refund                                                                             | §7.5            | Minimum viable payment (unblocks demo)                                     |
+| 11  | Done | **payment-x402 plugin** — Handle 402 responses, sign payment, retry with proof                                                                 | §7.2            | The OWS-relevant payment flow for the demo                                 |
+| 12  | Done | **Job engine** — 4-state lifecycle (pending → executing → completed/failed), payment status linking                                            | §6              | Track work performed                                                       |
+| 13  | Done | **Plugin loading** — `PaymentRegistry`, `ExtensionRegistry`, wallet loader; resolve from config → import plugin → register                     | Impl notes §1-5 | OWS judges will look for extensibility — swappable wallet is the key pitch |
 
 **Demo story:** Provider points adapter at an OpenAPI spec → adapter discovers capabilities → agent registers on a platform using OWS wallet-signed auth → discovers a task → bids → executes capability → gets paid via x402. Swap wallet to `solana-raw` with one config line. All autonomous.
 
@@ -91,16 +93,16 @@ Contracts (ABC definitions — the stable center)
 
 > Features that significantly strengthen the hackathon presentation and judge appeal.
 
-| #   | Feature                                                                                           | PRD Ref | Why it adds value                          |
-| --- | ------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------ |
-| 14  | **Dashboard — Overview page** — Wallet, balances, platforms, active jobs, earnings sparkline      | §15.3   | Visual demo > CLI-only demo at a hackathon |
-| 15  | **Dashboard — Capabilities page** — Pricing editor, enable/disable toggles                        | §15.3   | Shows provider sovereignty in action       |
-| 16  | **Dashboard — Agent page** — Decision log stream, tool call history, pause/resume                 | §15.3   | "Watch the agent think" is the wow factor  |
-| 17  | **payment-escrow plugin** — `pay_escrow__prepare_lock`, `sign_and_submit`, `check_status` (consumes external program via IDL) | §7.3 | On-chain escrow = strong OWS/Solana story |
-| 18  | **Provider-customizable system prompt** — File-based override, `appendToDefault` mode             | §10.4   | Shows the "no-code strategy tuning" angle  |
-| 19  | **Spec change detection** — Hash-based diff, flag new/changed/stale capabilities                  | §4.3    | Shows production-readiness thinking        |
-| 20  | **Management API** — REST endpoints backing the dashboard (FastAPI)                               | §15.4   | Enables programmatic control               |
-| 21  | **CLI commands** — `capabilities list/price/enable`, `agent decisions`, `wallet balance`          | §14.3   | Clean developer UX for live demo           |
+| #   | Status | Feature                                                                                           | PRD Ref | Why it adds value                          |
+| --- | ------ | ------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------ |
+| 14  | Mostly done | **Dashboard — Overview page** — Wallet, balances, platforms, active jobs, earnings sparkline      | §15.3   | Visual demo > CLI-only demo at a hackathon |
+| 15  | Partial | **Dashboard — Capabilities page** — Pricing editor, enable/disable toggles                        | §15.3   | Shows provider sovereignty in action       |
+| 16  | Mostly done | **Dashboard — Agent page** — Decision log stream, tool call history, pause/resume                 | §15.3   | "Watch the agent think" is the wow factor  |
+| 17  | Done | **payment-escrow plugin** — `pay_escrow__prepare_lock`, `sign_and_submit`, `check_status` (consumes platform-supplied program payload at runtime) | §7.3 | On-chain escrow = strong OWS/Solana story |
+| 18  | Done | **Provider-customizable system prompt** — File-based override, `appendToDefault` mode             | §10.4   | Shows the "no-code strategy tuning" angle  |
+| 19  | Done | **Spec change detection** — Hash-based diff, flag new/changed/stale capabilities                  | §4.3    | Shows production-readiness thinking        |
+| 20  | Done | **Management API** — REST endpoints backing the dashboard (FastAPI)                               | §15.4   | Enables programmatic control               |
+| 21  | Done | **CLI commands** — `capabilities list/price/enable`, `agent decisions`, `wallet balance`          | §14.3   | Clean developer UX for live demo           |
 
 ---
 
@@ -108,17 +110,17 @@ Contracts (ABC definitions — the stable center)
 
 > Features that round out the product but aren't needed to win.
 
-| #   | Feature                                                                               | PRD Ref       | Notes                                                    |
-| --- | ------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------- |
-| 22  | **Metrics & billing** — LLM cost tracking, profit margins, daily aggregation          | §11           | Important for real usage, not for demo                   |
-| 23  | **Dashboard — Metrics page** — Charts, export to CSV                                  | §15.3         | Needs real data to be meaningful                         |
-| 24  | **MCP server ingestion** — Second capability source type                              | §4.1          | Broadens the story but OpenAPI is enough for demo        |
-| 25  | **MPP/Stripe adapter** — Fiat payment rails                                           | §7.4          | Nice for completeness, not hackathon-critical            |
-| 26  | **Platform driver interface** — Plugin API for community drivers                      | §13.4         | Extensibility story is covered by wallet/payment plugins |
-| 27  | **Optional tools** — SSE listener, heartbeat, webhook receiver, notifications         | §12.5         | Operational polish                                       |
-| 28  | **Dashboard — Prompt editor** — History, diff view, test against examples             | §10.5         | UX polish                                                |
-| 29  | **Dashboard — Wallet page** — Tx history, export/import flows, faucet links           | §15.3         | Nice UX but CLI covers it                                |
-| 30  | **Plugin discovery** — site-packages scan via `pyproject.toml` entry points            | Impl notes §5 | Explicit config is enough initially                      |
+| #   | Status | Feature                                                                               | PRD Ref       | Notes                                                    |
+| --- | ------ | ------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------- |
+| 22  | Done | **Metrics & billing** — LLM cost tracking, profit margins, daily aggregation          | §11           | Important for real usage, not for demo                   |
+| 23  | Mostly done | **Dashboard — Metrics page** — Charts, export to CSV                                  | §15.3         | Needs real data to be meaningful                         |
+| 24  | Done | **MCP server ingestion** — Second capability source type                              | §4.1          | Broadens the story but OpenAPI is enough for demo        |
+| 25  | Pending | **MPP/Stripe adapter** — Fiat payment rails                                           | §7.4          | Nice for completeness, not hackathon-critical            |
+| 26  | Pending | **Platform driver interface** — Plugin API for community drivers                      | §13.4         | Extensibility story is covered by wallet/payment plugins |
+| 27  | Partial | **Optional tools** — SSE listener, heartbeat, webhook receiver, notifications         | §12.5         | Operational polish                                       |
+| 28  | Pending | **Dashboard — Prompt editor** — History, diff view, test against examples             | §10.5         | UX polish                                                |
+| 29  | Partial | **Dashboard — Wallet page** — Tx history, export/import flows, faucet links           | §15.3         | Nice UX but CLI covers it                                |
+| 30  | Done | **Plugin discovery** — site-packages scan via `pyproject.toml` entry points            | Impl notes §5 | Explicit config is enough initially                      |
 
 ---
 

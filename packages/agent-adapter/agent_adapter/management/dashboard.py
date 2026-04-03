@@ -61,8 +61,15 @@ def _shell(title: str, body: str, page_data: dict | None = None) -> str:
               <small>Decisions and execution</small>
             </span>
           </a>
-          <a href="/dashboard/metrics">
+          <a href="/dashboard/operations">
             <span class="nav-index">04</span>
+            <span class="nav-copy">
+              <strong>Operations</strong>
+              <small>Wallet, heartbeats, events</small>
+            </span>
+          </a>
+          <a href="/dashboard/metrics">
+            <span class="nav-index">05</span>
             <span class="nav-copy">
               <strong>Metrics</strong>
               <small>Revenue, cost, performance</small>
@@ -211,6 +218,80 @@ def mount_dashboard(app: FastAPI, runtime: RuntimeContext) -> None:
             "Agent",
             body,
             {"page": "agent", "status": status, "decisions": decisions},
+        )
+
+    @app.get("/dashboard/operations", response_class=HTMLResponse, include_in_schema=False)
+    async def dashboard_operations():
+        operations = await runtime.get_operations_overview()
+        body = """
+        <section class="hero compact">
+          <div class="hero-copy">
+            <div class="eyebrow">Runtime Operations</div>
+            <h2>Operations</h2>
+            <p>Keep the provider wallet, platform presence, webhook ingress, and recent execution activity visible from one operational surface.</p>
+          </div>
+          <div class="hero-meta compact">
+            <div class="hero-callout">
+              <span class="label">Ops Focus</span>
+              <strong>Presence, liquidity, and inbound work signals stay visible while the agent runs.</strong>
+            </div>
+          </div>
+        </section>
+        <section class="grid cards metrics-cards">
+          <article class="card">
+            <span class="label">Signing Wallet</span>
+            <strong id="ops-wallet-address"></strong>
+            <p class="card-foot">Primary runtime identity used for signing and settlement.</p>
+          </article>
+          <article class="card">
+            <span class="label">Balances</span>
+            <strong id="ops-wallet-balances"></strong>
+            <p class="card-foot">Live liquidity available for execution, settlement, and escrow.</p>
+          </article>
+          <article class="card">
+            <span class="label">Heartbeats</span>
+            <strong id="ops-heartbeat-count"></strong>
+            <p class="card-foot">Tracked presence checks stored in the runtime state layer.</p>
+          </article>
+          <article class="card">
+            <span class="label">Pending Events</span>
+            <strong id="ops-pending-events"></strong>
+            <p class="card-foot">Webhook and SSE messages waiting to be consumed or acknowledged.</p>
+          </article>
+        </section>
+        <section class="grid metrics-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Heartbeat Presence</h3>
+            </div>
+            <div id="operations-heartbeats"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Inbound Event Feed</h3>
+            </div>
+            <div id="operations-events"></div>
+          </article>
+        </section>
+        <section class="grid metrics-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Connected Platforms</h3>
+            </div>
+            <div id="operations-platforms"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Recent Job Activity</h3>
+            </div>
+            <div id="operations-jobs"></div>
+          </article>
+        </section>
+        """
+        return _shell(
+            "Operations",
+            body,
+            {"page": "operations", "operations": operations},
         )
 
     @app.get("/dashboard/metrics", response_class=HTMLResponse, include_in_schema=False)

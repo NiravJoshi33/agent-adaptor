@@ -419,6 +419,71 @@ class RuntimeContext:
                     pass
         return data
 
+    async def list_state_entries(
+        self,
+        namespace: str,
+        *,
+        prefix: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        cursor = await self.db.conn.execute(
+            """
+            SELECT key, data, updated_at
+            FROM state
+            WHERE namespace = ? AND key LIKE ?
+            ORDER BY datetime(updated_at) DESC, key
+            LIMIT ?
+            """,
+            (namespace, f"{prefix}%", limit),
+        )
+        rows = await cursor.fetchall()
+        entries: list[dict[str, Any]] = []
+        for key, data, updated_at in rows:
+            try:
+                payload = json.loads(data)
+            except Exception:
+                payload = data
+            entries.append(
+                {
+                    "key": key,
+                    "data": payload,
+                    "updated_at": updated_at,
+                }
+            )
+        return entries
+
+    async def get_operations_overview(self) -> dict[str, Any]:
+        status = await self.whoami()
+        heartbeats = await self.list_state_entries("heartbeats", limit=10)
+        events = await self.list_inbound_events(limit=12, pending_only=False)
+        platforms = await self.list_platforms()
+        jobs = await self.list_jobs(8)
+
+        pending_events_cursor = await self.db.conn.execute(
+            "SELECT COUNT(*) FROM inbound_events WHERE delivered_at IS NULL"
+        )
+        pending_events = int((await pending_events_cursor.fetchone())[0])
+
+        heartbeat_count_cursor = await self.db.conn.execute(
+            "SELECT COUNT(*) FROM state WHERE namespace = 'heartbeats'"
+        )
+        heartbeat_count = int((await heartbeat_count_cursor.fetchone())[0])
+
+        return {
+            "wallet": status["wallet"],
+            "balances": status["balances"],
+            "payment_adapters": status["payment_adapters"],
+            "agent_status": status["agent_status"],
+            "active_jobs": status["active_jobs"],
+            "jobs_completed_today": status["jobs_completed_today"],
+            "registered_platforms": platforms,
+            "heartbeats": heartbeats,
+            "heartbeats_total": heartbeat_count,
+            "events": events,
+            "pending_events": pending_events,
+            "recent_jobs": jobs,
+        }
+
     async def pause_agent(self) -> dict[str, Any]:
         self.agent_paused = True
         return {"status": "paused"}

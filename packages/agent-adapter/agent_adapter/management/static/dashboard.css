@@ -323,6 +323,65 @@ a {
   justify-items: end;
 }
 
+.ops-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.ops-item {
+  padding: 18px 18px 16px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0.014)),
+    rgba(9, 8, 17, 0.56);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.ops-item-header,
+.ops-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ops-item-header {
+  align-items: flex-start;
+}
+
+.ops-item-header strong {
+  display: block;
+  font-size: 1.02rem;
+}
+
+.ops-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
+.ops-foot {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ops-code {
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(5, 5, 10, 0.62);
+  color: var(--muted-strong);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .hero-meta.compact {
   justify-items: stretch;
 }
@@ -533,14 +592,27 @@ a {
   color: #9cf7dd;
 }
 
+.badge.healthy,
+.badge.delivered,
+.badge.completed,
+.badge.running,
+.badge.registered {
+  color: #9cf7dd;
+}
+
 .badge.needs_pricing,
-.badge.new {
+.badge.new,
+.badge.pending {
   color: var(--warning);
 }
 
 .badge.disabled,
 .badge.stale,
-.badge.schema_changed {
+.badge.schema_changed,
+.badge.degraded,
+.badge.failed,
+.badge.error,
+.badge.paused {
   color: var(--danger);
 }
 

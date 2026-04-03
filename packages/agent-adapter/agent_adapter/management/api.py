@@ -105,6 +105,10 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
             )
         }
 
+    @app.get("/manage/operations")
+    async def get_operations():
+        return await runtime.get_operations_overview()
+
     @app.get("/manage/metrics")
     async def get_metrics(days: int = 30):
         return await runtime.get_metrics_summary(days)
