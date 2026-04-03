@@ -15,6 +15,15 @@ Built for the Open Wallet Foundation hackathon, this repo focuses on a practical
 - support multiple payment rails
 - give the provider a local control plane for prompt, wallet, metrics, operations, and capability management
 
+## Core Principles
+
+- provider sovereignty: self-hosted, self-custodial, and provider-controlled
+- discovery is automatic, monetization is manual
+- the embedded agent decides at runtime; the provider shapes policy through prompt and config
+- one adapter instance is one economic identity
+- the core stays platform-agnostic; platform drivers are optional plugins, not the default path
+- use boring, practical infrastructure where possible
+
 ## Why This Exists
 
 Most agent marketplaces assume providers will:
@@ -43,14 +52,25 @@ The runtime handles the glue:
 - job tracking
 - management API and dashboard
 
+The runtime is designed so the provider keeps custody and control:
+
+- keys stay with the provider
+- pricing stays local to the runtime
+- capability activation is explicit
+- infra remains self-hosted
+- platforms are optional integrations, not hard dependencies
+
 ## What Works Today
 
 ### Capability Sources
 
 - OpenAPI capability discovery
 - MCP tool discovery and execution
+- manual capability definitions for curated or higher-level capabilities
 - dynamic `cap__*` tool generation inside the agent loop
 - spec drift detection with local pricing overlays
+
+Newly discovered capabilities do not go live automatically. Discovery is automatic, but pricing and enablement are local provider decisions.
 
 ### Agent Runtime
 
@@ -59,6 +79,8 @@ The runtime handles the glue:
 - prompt hot reload
 - job creation and lifecycle tracking
 - decision logging and management APIs
+
+The runtime follows an "agent decides" model: the provider can influence priorities, platform preferences, risk tolerance, and bidding posture through prompt/config, but the embedded agent makes the live operational decisions.
 
 ### Wallet and Payments
 
@@ -72,6 +94,8 @@ The runtime handles the glue:
 - Stripe-backed MPP adapter
 - buyer-side MPP challenge retry flow when an SPT is already available
 
+Multiple payment adapters can coexist in one runtime. The runtime resolves the appropriate adapter per payment challenge instead of binding the provider to a single rail.
+
 ### Platform and Operations
 
 - platform driver interface
@@ -79,6 +103,8 @@ The runtime handles the glue:
 - driver install/remove CLI
 - webhook, SSE, and heartbeat tools
 - outbound notification bridge via extension plugins
+
+Platform drivers are intentionally optional. The default runtime path is generic tools plus platform docs; drivers exist for flows that are too complex or brittle to handle reliably that way.
 
 ### Management Surface
 
@@ -102,6 +128,8 @@ At a high level:
 4. Tool execution flows through wallet, payment, job, and extension layers.
 5. The provider manages everything through the CLI, API, or dashboard.
 
+One adapter instance equals one economic identity: one wallet, one capability surface, one prompt/customization layer, and one agent brain. Providers who want multiple personas or policy boundaries can run multiple instances.
+
 Core building blocks:
 
 - `agent-adapter-contracts`
@@ -110,6 +138,15 @@ Core building blocks:
   The runtime, CLI, management API, dashboard, stores, and orchestration logic.
 - `packages/plugins/*`
   Bundled wallet, payment, and extension plugins.
+
+The plugin model has three main shapes:
+
+- swappable core modules
+  Wallets and other required runtime slots can be replaced by alternate implementations.
+- payment adapters
+  Multiple payment adapters can be registered and resolved dynamically per payment challenge.
+- add-on extensions
+  Optional plugins subscribe to runtime lifecycle events and add behavior like notifications or automation.
 
 ## Repo Layout
 
@@ -130,6 +167,29 @@ tests/
   test_management_surface.py
   test_runtime_integration.py
 ```
+
+## Packaging Plan
+
+We plan to keep the project split into two publishable layers:
+
+- `agent-adapter-contracts`
+  A lightweight contracts package with the shared interfaces and runtime event types for wallets, payments, extensions, and platform drivers.
+- `agent-adapter`
+  The full runtime package with the CLI, management API, dashboard, orchestration, stores, and built-in plugin loading.
+
+That split is intentional. It lets the wider community depend on the contracts package without needing the whole runtime, then ship their own plugins against a stable interface surface.
+
+The goal is to make it easy for others to build and publish:
+
+- wallet plugins
+- payment adapters
+- extension plugins
+- platform drivers
+- capability-source adapters over time
+
+In practice, a plugin author should be able to import the contracts package, implement the relevant interface, publish a package, and have the runtime discover or load it through config or entry points.
+
+This is a key part of the long-term OSS plan: the runtime should be one usable reference implementation, while the contracts package becomes the shared foundation for a broader plugin ecosystem.
 
 ## Quickstart
 
