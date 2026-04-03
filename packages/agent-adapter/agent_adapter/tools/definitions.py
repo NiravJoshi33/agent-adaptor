@@ -122,6 +122,32 @@ class wallet__sign_transaction(BaseModel):
     )
 
 
+# ── Escrow payment tools ──────────────────────────────────────────────
+
+
+class pay_escrow__prepare_lock(BaseModel):
+    """Normalize a platform-supplied Solana escrow payload into an unsigned transaction. Accept either an unsigned_transaction or raw instruction payloads."""
+
+    payment: dict = Field(
+        description="Platform-supplied escrow payload. Supports either {unsigned_transaction, transaction_encoding} or {instructions:[{program_id, accounts, data, data_encoding}], fee_payer?, recent_blockhash?, amount?, currency?, metadata?}"
+    )
+
+
+class pay_escrow__sign_and_submit(BaseModel):
+    """Sign a prepared Solana escrow transaction with the active wallet and submit it to the configured RPC."""
+
+    transaction: str = Field(description="Serialized transaction bytes")
+    encoding: str = Field(
+        default="base64", description="Encoding for the transaction: base64 or hex"
+    )
+
+
+class pay_escrow__check_status(BaseModel):
+    """Check the chain confirmation status for a submitted escrow transaction signature."""
+
+    signature: str = Field(description="Submitted transaction signature")
+
+
 # ── All core tool models ──────────────────────────────────────────────
 
 CORE_TOOL_MODELS: list[type[BaseModel]] = [
@@ -138,6 +164,9 @@ CORE_TOOL_MODELS: list[type[BaseModel]] = [
     wallet__get_balance,
     wallet__sign_message,
     wallet__sign_transaction,
+    pay_escrow__prepare_lock,
+    pay_escrow__sign_and_submit,
+    pay_escrow__check_status,
 ]
 
 

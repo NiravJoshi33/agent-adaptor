@@ -10,9 +10,11 @@ import tempfile
 import unittest
 
 import httpx
+from agent_adapter.payments import load_payment_registry
 from solana.rpc.async_api import AsyncClient as SolanaClient
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
+from solders.system_program import TransferParams, transfer
 
 from agent_adapter.capabilities.openapi import parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
@@ -28,6 +30,31 @@ from simulation.provider_api import paid_server
 from simulation.setup_usdc import create_usdc_mint, fund_usdc, get_usdc_balance
 from tests.helpers import SURFPOOL_RPC, airdrop_and_confirm, wait_for_surfpool
 from wallet_solana_raw import SolanaRawWallet
+
+
+def _serialize_instruction_payload(instruction, *, fee_payer: str, amount: float, currency: str) -> dict[str, object]:
+    return {
+        "instructions": [
+            {
+                "program_id": str(instruction.program_id),
+                "accounts": [
+                    {
+                        "pubkey": str(meta.pubkey),
+                        "is_signer": meta.is_signer,
+                        "is_writable": meta.is_writable,
+                    }
+                    for meta in instruction.accounts
+                ],
+                "data": base64.b64encode(bytes(instruction.data)).decode(),
+                "data_encoding": "base64",
+            }
+        ],
+        "fee_payer": fee_payer,
+        "amount": amount,
+        "currency": currency,
+        "reference": "platform-escrow-lock",
+        "metadata": {"payment_protocol": "escrow"},
+    }
 
 @contextlib.contextmanager
 def override_provider_routes():
@@ -208,6 +235,64 @@ class SurfpoolX402FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(receipt["success"])
         self.assertEqual(receipt["asset"], str(self.usdc_mint))
         self.assertIn("txSignature", receipt)
+
+    async def test_escrow_tools_submit_platform_supplied_program_payload(self) -> None:
+        payments = load_payment_registry(
+            [{"type": "escrow", "config": {"rpc_url": SURFPOOL_RPC}}],
+            wallet=self.agent_wallet,
+        )
+        handlers = ToolHandlers(
+            wallet=self.agent_wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            payments=payments,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        recipient = Keypair()
+        before = (await self.rpc.get_balance(recipient.pubkey())).value
+        instruction = transfer(
+            TransferParams(
+                from_pubkey=self.agent_wallet.keypair.pubkey(),
+                to_pubkey=recipient.pubkey(),
+                lamports=500_000,
+            )
+        )
+        payload = _serialize_instruction_payload(
+            instruction,
+            fee_payer=str(self.agent_wallet.keypair.pubkey()),
+            amount=0.0005,
+            currency="SOL",
+        )
+
+        prepared = json.loads(
+            await handlers.dispatch("pay_escrow__prepare_lock", {"payment": payload})
+        )
+        self.assertEqual(prepared["currency"], "SOL")
+        self.assertEqual(
+            prepared["required_signers"], [str(self.agent_wallet.keypair.pubkey())]
+        )
+
+        submitted = json.loads(
+            await handlers.dispatch(
+                "pay_escrow__sign_and_submit",
+                {"transaction": prepared["transaction"], "encoding": prepared["encoding"]},
+            )
+        )
+        self.assertTrue(submitted["submitted"])
+
+        status = json.loads(
+            await handlers.dispatch(
+                "pay_escrow__check_status", {"signature": submitted["signature"]}
+            )
+        )
+        self.assertTrue(status["found"])
+        self.assertIn(status["confirmation_status"], {"processed", "confirmed", "finalized"})
+
+        after = (await self.rpc.get_balance(recipient.pubkey())).value
+        self.assertGreaterEqual(after - before, 500_000)
 
 
 if __name__ == "__main__":

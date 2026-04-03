@@ -563,6 +563,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
             job_engine=job_engine,
             capability_registry=registry,
             x402_http_client=x402_http_client,
+            payments=payments,
         ),
         x402_http_client=x402_http_client,
         stale_capabilities=stale_capabilities,

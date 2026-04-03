@@ -12,10 +12,12 @@ import httpx
 
 from agent_adapter.capabilities.openapi import fetch_and_parse
 from agent_adapter.capabilities.registry import CapabilityRegistry
+from agent_adapter.payments.registry import PaymentRegistry
 from agent_adapter.store.database import Database
 from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
 from agent_adapter.jobs.engine import JobEngine
+from agent_adapter_contracts.payments import PaymentChallenge
 from agent_adapter_contracts.wallet import WalletPlugin
 
 
@@ -32,6 +34,7 @@ class ToolHandlers:
         whoami_fn: Any = None,
         x402_http_client: Any = None,
         capability_registry: CapabilityRegistry | None = None,
+        payments: PaymentRegistry | None = None,
     ) -> None:
         self._wallet = wallet
         self._secrets = secrets
@@ -41,6 +44,7 @@ class ToolHandlers:
         self._whoami_fn = whoami_fn
         self._x402_http_client = x402_http_client
         self._capability_registry = capability_registry
+        self._payments = payments
         self._plain_http_client = httpx.AsyncClient(follow_redirects=True, timeout=30)
 
     @property
@@ -203,6 +207,36 @@ class ToolHandlers:
         tx_bytes = bytes.fromhex(args["transaction"])
         signed = await self._wallet.sign_transaction(tx_bytes)
         return {"signed_transaction": signed.hex()}
+
+    # ── Escrow payment tools ───────────────────────────────────────
+
+    async def _handle_pay_escrow__prepare_lock(self, args: dict) -> dict:
+        adapter = self._require_payment_adapter("escrow")
+        payment = args.get("payment") or {}
+        challenge = PaymentChallenge(
+            type="escrow",
+            amount=float(payment.get("amount", 0.0) or 0.0),
+            extra=payment,
+        )
+        if not hasattr(adapter, "prepare_lock"):
+            raise NotImplementedError("Escrow adapter does not support prepare_lock")
+        return await adapter.prepare_lock(challenge, self._wallet)
+
+    async def _handle_pay_escrow__sign_and_submit(self, args: dict) -> dict:
+        adapter = self._require_payment_adapter("escrow")
+        if not hasattr(adapter, "sign_and_submit"):
+            raise NotImplementedError("Escrow adapter does not support sign_and_submit")
+        return await adapter.sign_and_submit(
+            args["transaction"],
+            self._wallet,
+            encoding=args.get("encoding", "base64"),
+        )
+
+    async def _handle_pay_escrow__check_status(self, args: dict) -> dict:
+        adapter = self._require_payment_adapter("escrow")
+        if not hasattr(adapter, "check_status"):
+            raise NotImplementedError("Escrow adapter does not support check_status")
+        return await adapter.check_status(args["signature"])
 
     async def _handle_capability_tool(
         self, tool_name: str, args: dict[str, Any]
@@ -370,6 +404,11 @@ class ToolHandlers:
     def _hash_payload(self, payload: Any) -> str:
         raw = json.dumps(payload, sort_keys=True, default=str).encode()
         return hashlib.sha256(raw).hexdigest()[:16]
+
+    def _require_payment_adapter(self, challenge_type: str) -> Any:
+        if self._payments is None:
+            raise ValueError("No payment registry configured")
+        return self._payments.resolve(PaymentChallenge(type=challenge_type))
 
     async def close(self) -> None:
         await self._plain_http_client.aclose()

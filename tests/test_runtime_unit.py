@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+import base64
 
 from agent_adapter.capabilities.openapi import parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
@@ -19,6 +20,13 @@ from agent_adapter.tools.definitions import build_tool_list
 from agent_adapter.tools.handlers import ToolHandlers
 from agent_adapter_contracts.payments import PaymentChallenge
 from agent_adapter_contracts.types import Capability, PricingConfig
+from payment_escrow import EscrowAdapter
+from solders.hash import Hash
+from solders.keypair import Keypair
+from solders.message import to_bytes_versioned
+from solders.signature import Signature
+from solders.system_program import TransferParams, transfer
+from solders.transaction import VersionedTransaction
 
 
 class DummyWallet:
@@ -37,6 +45,33 @@ class DummyWallet:
 
     async def sign_transaction(self, tx: bytes) -> bytes:
         return tx + b"-signed"
+
+
+class SigningWallet:
+    def __init__(self) -> None:
+        self.keypair = Keypair()
+
+    async def get_address(self) -> str:
+        return str(self.keypair.pubkey())
+
+    async def get_balance(self, chain: str | None = None) -> dict[str, float]:
+        return {"sol": 0.0, "usdc": 0.0}
+
+    async def sign_message(self, msg: bytes) -> bytes:
+        return bytes(self.keypair.sign_message(msg))
+
+    async def sign_transaction(self, tx: bytes) -> bytes:
+        versioned = VersionedTransaction.from_bytes(tx)
+        message_bytes = to_bytes_versioned(versioned.message)
+        signatures = list(versioned.signatures)
+        for idx, key in enumerate(
+            list(versioned.message.account_keys)[
+                : versioned.message.header.num_required_signatures
+            ]
+        ):
+            if key == self.keypair.pubkey():
+                signatures[idx] = self.keypair.sign_message(message_bytes)
+        return bytes(VersionedTransaction.populate(versioned.message, signatures))
 
 
 class FakeHttpResponse:
@@ -61,6 +96,66 @@ class FakeHttpClient:
 
     async def aclose(self) -> None:
         pass
+
+
+class FakeRpcResponse:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+
+class FakeSignatureStatus:
+    def __init__(
+        self,
+        *,
+        confirmation_status: str = "confirmed",
+        confirmations: int | None = None,
+        slot: int = 99,
+        err: object = None,
+    ) -> None:
+        self.confirmation_status = confirmation_status
+        self.confirmations = confirmations
+        self.slot = slot
+        self.err = err
+
+
+class FakeRpcClient:
+    def __init__(self, rpc_url: str) -> None:
+        self.rpc_url = rpc_url
+        self.sent_transactions: list[bytes] = []
+        self.confirmed: list[str] = []
+        self.statuses: dict[str, FakeSignatureStatus] = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get_latest_blockhash(self):
+        return FakeRpcResponse(type("V", (), {"blockhash": Hash.default()})())
+
+    async def send_raw_transaction(self, raw_tx: bytes, opts=None):
+        self.sent_transactions.append(raw_tx)
+        signature = str(VersionedTransaction.from_bytes(raw_tx).signatures[0])
+        self.statuses[signature] = FakeSignatureStatus()
+        return FakeRpcResponse(signature)
+
+    async def confirm_transaction(self, signature: str):
+        self.confirmed.append(str(signature))
+        return FakeRpcResponse(True)
+
+    async def get_signature_statuses(self, signatures, search_transaction_history: bool = True):
+        values = [self.statuses.get(str(sig)) for sig in signatures]
+        return FakeRpcResponse(values)
+
+
+class FakeRpcFactory:
+    def __init__(self) -> None:
+        self.client = FakeRpcClient("fake-rpc")
+
+    def __call__(self, rpc_url: str) -> FakeRpcClient:
+        self.client.rpc_url = rpc_url
+        return self.client
 
 
 class OpenAPIParsingTests(unittest.TestCase):
@@ -266,9 +361,112 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
 
 class LoaderTests(unittest.TestCase):
     def test_load_payment_registry_from_config(self) -> None:
-        registry = load_payment_registry([{"type": "free"}])
-        self.assertEqual(registry.list(), ["free"])
+        registry = load_payment_registry([{"type": "free"}, {"type": "escrow"}])
+        self.assertEqual(registry.list(), ["free", "solana_escrow"])
         self.assertEqual(registry.resolve(PaymentChallenge(type="free")).id, "free")
+        self.assertEqual(
+            registry.resolve(PaymentChallenge(type="escrow")).id, "solana_escrow"
+        )
+
+
+class EscrowAdapterTests(unittest.IsolatedAsyncioTestCase):
+    def _transfer_payload(
+        self,
+        payer: SigningWallet,
+        recipient: Keypair,
+        *,
+        lamports: int = 1234,
+        fee_payer: str | None = None,
+    ) -> dict[str, object]:
+        instruction = transfer(
+            TransferParams(
+                from_pubkey=payer.keypair.pubkey(),
+                to_pubkey=recipient.pubkey(),
+                lamports=lamports,
+            )
+        )
+        return {
+            "instructions": [
+                {
+                    "program_id": str(instruction.program_id),
+                    "accounts": [
+                        {
+                            "pubkey": str(meta.pubkey),
+                            "is_signer": meta.is_signer,
+                            "is_writable": meta.is_writable,
+                        }
+                        for meta in instruction.accounts
+                    ],
+                    "data": base64.b64encode(bytes(instruction.data)).decode(),
+                    "data_encoding": "base64",
+                }
+            ],
+            "recent_blockhash": str(Hash.default()),
+            "fee_payer": fee_payer or str(payer.keypair.pubkey()),
+            "amount": 0.000001234,
+            "currency": "SOL",
+            "reference": "escrow-demo",
+            "metadata": {"platform": "tasknet"},
+        }
+
+    async def test_prepare_lock_builds_transaction_from_program_payload(self) -> None:
+        wallet = SigningWallet()
+        recipient = Keypair()
+        adapter = EscrowAdapter(rpc_client_factory=FakeRpcFactory())
+
+        prepared = await adapter.prepare_lock(
+            PaymentChallenge(
+                type="escrow",
+                amount=0.000001234,
+                extra=self._transfer_payload(wallet, recipient),
+            ),
+            wallet,
+        )
+
+        self.assertEqual(prepared["encoding"], "base64")
+        self.assertEqual(prepared["currency"], "SOL")
+        self.assertEqual(prepared["required_signers"], [await wallet.get_address()])
+
+        tx_bytes = base64.b64decode(prepared["transaction"])
+        versioned = VersionedTransaction.from_bytes(tx_bytes)
+        self.assertEqual(
+            str(versioned.message.account_keys[0]), await wallet.get_address()
+        )
+
+    async def test_prepare_lock_rejects_additional_required_signers(self) -> None:
+        wallet = SigningWallet()
+        recipient = Keypair()
+        adapter = EscrowAdapter(rpc_client_factory=FakeRpcFactory())
+
+        payload = self._transfer_payload(
+            wallet,
+            recipient,
+            fee_payer=str(Keypair().pubkey()),
+        )
+        with self.assertRaisesRegex(ValueError, "fee payer"):
+            await adapter.prepare_lock(
+                PaymentChallenge(type="escrow", extra=payload),
+                wallet,
+            )
+
+    async def test_sign_and_submit_and_check_status_use_rpc_path(self) -> None:
+        wallet = SigningWallet()
+        recipient = Keypair()
+        rpc_factory = FakeRpcFactory()
+        adapter = EscrowAdapter(rpc_client_factory=rpc_factory)
+
+        prepared = await adapter.prepare_lock(
+            PaymentChallenge(type="escrow", extra=self._transfer_payload(wallet, recipient)),
+            wallet,
+        )
+        submitted = await adapter.sign_and_submit(prepared["transaction"], wallet)
+        status = await adapter.check_status(submitted["signature"])
+
+        self.assertTrue(submitted["submitted"])
+        self.assertTrue(rpc_factory.client.sent_transactions)
+        self.assertIn(submitted["signature"], rpc_factory.client.confirmed)
+        self.assertTrue(status["found"])
+        self.assertEqual(status["confirmation_status"], "confirmed")
 
 
 if __name__ == "__main__":
