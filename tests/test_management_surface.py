@@ -728,6 +728,22 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         assert agent is not None
         self.assertIn("Keep inventory risk near zero.", agent.system_prompt)
 
+    async def test_prompt_file_changes_hot_reload_cached_agent_loop(self) -> None:
+        agent = await self.runtime.ensure_agent_loop()
+        self.assertIsNotNone(agent)
+        assert agent is not None
+        self.assertIn("Keep bids conservative.", agent.system_prompt)
+
+        prompt_path = self.root / "prompts" / "system.md"
+        prompt_path.write_text("Prefer stable recurring work over one-off tasks.")
+
+        reloaded = await self.runtime.ensure_agent_loop()
+        self.assertIsNotNone(reloaded)
+        assert reloaded is not None
+        self.assertIsNot(agent, reloaded)
+        self.assertIn("Prefer stable recurring work over one-off tasks.", reloaded.system_prompt)
+        self.assertNotIn("Keep bids conservative.", reloaded.system_prompt)
+
     async def test_webhook_receiver_persists_events_for_agent_consumption(self) -> None:
         received = (
             await self.client.post(

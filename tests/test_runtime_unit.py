@@ -862,6 +862,77 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][0], "GET")
         self.assertEqual(calls[1][0], "POST")
 
+    async def test_http_request_retries_mpp_payment_challenge_with_authorization(self) -> None:
+        calls: list[tuple[str, dict[str, str]]] = []
+        request_payload = {
+            "amount": "250",
+            "currency": "usd",
+            "description": "Metered access",
+            "methodDetails": {"networkId": "seller-network"},
+        }
+        challenge_header = (
+            'Payment id="ch_retry_1", realm="seller.example", method="stripe", '
+            f'intent="charge", request="{build_payment_receipt_header(request_payload)}", '
+            'expires="2099-01-01T00:00:00Z"'
+        )
+        payment_receipt = build_payment_receipt_header(
+            {
+                "status": "success",
+                "method": "stripe",
+                "reference": "pi_paid_123",
+                "timestamp": "2099-01-01T00:00:00Z",
+            }
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.method, dict(request.headers)))
+            if "authorization" not in request.headers:
+                return httpx.Response(
+                    402,
+                    headers={"WWW-Authenticate": challenge_header},
+                    json={"detail": "payment required"},
+                )
+            credential = parse_payment_authorization_header(
+                request.headers["authorization"]
+            )
+            assert credential["payload"]["spt"] == "spt_client_123"
+            return httpx.Response(
+                200,
+                headers={"Payment-Receipt": payment_receipt},
+                json={"ok": True},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        payments = load_payment_registry(
+            [{"type": "mpp", "config": {"shared_payment_token": "spt_client_123"}}]
+        )
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            payments=payments,
+            plain_http_client=client,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        result = json.loads(
+            await handlers.dispatch(
+                "net__http_request",
+                {"method": "GET", "url": "https://seller.example/protected"},
+            )
+        )
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(result["body"], {"ok": True})
+        self.assertEqual(result["payment"]["protocol"], "mpp")
+        self.assertEqual(result["payment"]["challenge_id"], "ch_retry_1")
+        self.assertEqual(result["payment"]["payment_receipt"], payment_receipt)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("authorization", {k.lower(): v for k, v in calls[0][1].items()})
+        self.assertIn("authorization", {k.lower(): v for k, v in calls[1][1].items()})
+
 
 class LoaderTests(unittest.TestCase):
     def test_load_payment_registry_from_config(self) -> None:
@@ -998,6 +1069,41 @@ class MPPStripeAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(client.calls[0]["data"]["shared_payment_granted_token"], "spt_123")
         self.assertEqual(client.calls[0]["data"]["metadata[product]"], "api")
+
+    async def test_mpp_adapter_builds_client_authorization_from_shared_token(self) -> None:
+        challenge, _ = self._build_mpp_fixture()
+        adapter = MPPStripeAdapter(
+            shared_payment_token="spt_client_123",
+            external_id="ext_789",
+        )
+
+        challenge_header = (
+            "Payment "
+            f'id="{challenge["id"]}", '
+            f'realm="{challenge["realm"]}", '
+            'method="stripe", '
+            'intent="charge", '
+            f'request="{challenge["request"]}", '
+            f'expires="{challenge["expires"]}"'
+        )
+
+        receipt = await adapter.execute(
+            PaymentChallenge(
+                type="mpp",
+                headers={"WWW-Authenticate": challenge_header},
+            ),
+            DummyWallet(),
+        )
+
+        self.assertEqual(receipt.protocol, "mpp")
+        self.assertEqual(receipt.currency, "USD")
+        self.assertEqual(receipt.amount, 1.0)
+        auth_value = str(receipt.extra["authorization_header"])
+        self.assertTrue(auth_value.startswith("Payment "))
+        credential = parse_payment_authorization_header(auth_value)
+        self.assertEqual(credential["payload"]["spt"], "spt_client_123")
+        self.assertEqual(credential["payload"]["externalId"], "ext_789")
+        self.assertEqual(credential["challenge"]["id"], challenge["id"])
 
     async def test_mpp_adapter_refund_uses_payment_intent(self) -> None:
         client = FakeStripeClient([FakeStripeResponse(200, {"id": "re_123"})])

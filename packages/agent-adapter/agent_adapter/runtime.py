@@ -293,6 +293,7 @@ class RuntimeContext:
     agent_paused: bool = False
     stale_capabilities: list[dict[str, Any]] | None = None
     _agent_loop: AgentLoop | None = None
+    _prompt_signature: tuple[str, bool, str] | None = None
 
     async def whoami(self) -> dict[str, Any]:
         active_jobs = await self.job_engine.list_active()
@@ -571,9 +572,7 @@ class RuntimeContext:
         return {"status": "running"}
 
     async def get_prompt_settings(self) -> dict[str, Any]:
-        prompt_path = _prompt_path(self.config, self.config_path)
-        custom_prompt = prompt_path.read_text() if prompt_path.exists() else ""
-        append_to_default = self.config.get("agent", {}).get("appendToDefault", True)
+        prompt_path, custom_prompt, append_to_default, _ = self._read_prompt_state()
         return {
             "path": str(prompt_path),
             "exists": prompt_path.exists(),
@@ -613,6 +612,7 @@ class RuntimeContext:
             update_agent_config(self.config_path, system_prompt_file=str(prompt_path))
 
         self._agent_loop = None
+        self._prompt_signature = None
         return await self.get_prompt_settings()
 
     async def record_inbound_event(
@@ -1000,17 +1000,15 @@ class RuntimeContext:
         return dict(zip(cols, row))
 
     async def ensure_agent_loop(self) -> AgentLoop | None:
-        if self._agent_loop is not None:
-            return self._agent_loop
-
         agent_cfg = self.config.get("agent", {})
         api_key = agent_cfg.get("apiKey") or _default_api_key(agent_cfg)
         if not api_key:
             return None
 
-        prompt_path = _prompt_path(self.config, self.config_path)
-        custom_prompt = prompt_path.read_text() if prompt_path.exists() else ""
-        append_to_default = agent_cfg.get("appendToDefault", True)
+        _, custom_prompt, append_to_default, prompt_signature = self._read_prompt_state()
+        if self._agent_loop is not None and self._prompt_signature == prompt_signature:
+            return self._agent_loop
+
         self._agent_loop = AgentLoop(
             api_key=api_key,
             model=agent_cfg.get("model", "openai/gpt-oss-120b"),
@@ -1023,6 +1021,7 @@ class RuntimeContext:
             + self.drivers.to_tool_definitions(),
             usage_recorder=self.record_llm_usage,
         )
+        self._prompt_signature = prompt_signature
         return self._agent_loop
 
     async def run_agent_once(self, message: str = "Begin your planning loop.") -> str:
@@ -1056,6 +1055,17 @@ class RuntimeContext:
         await self.drivers.shutdown()
         await self.handlers.close()
         await self.db.close()
+
+    def _read_prompt_state(self) -> tuple[Path, str, bool, tuple[str, bool, str]]:
+        prompt_path = _prompt_path(self.config, self.config_path)
+        custom_prompt = prompt_path.read_text() if prompt_path.exists() else ""
+        append_to_default = self.config.get("agent", {}).get("appendToDefault", True)
+        signature = (
+            str(prompt_path.resolve()),
+            append_to_default,
+            custom_prompt,
+        )
+        return prompt_path, custom_prompt, append_to_default, signature
 
 
 def _default_api_key(agent_cfg: dict[str, Any]) -> str:

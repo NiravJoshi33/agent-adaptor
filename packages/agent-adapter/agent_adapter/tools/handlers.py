@@ -571,6 +571,14 @@ class ToolHandlers:
                 kwargs["content"] = str(body)
 
         resp = await self._http_client.request(method.upper(), url, **kwargs)
+        payment_result: dict[str, Any] | None = None
+        if self._payments and resp.status_code == 402:
+            payment_result, resp = await self._attempt_payment_retry(
+                method.upper(),
+                url,
+                resp,
+                kwargs=kwargs,
+            )
         result: dict[str, Any] = {
             "status_code": resp.status_code,
             "headers": dict(resp.headers),
@@ -579,7 +587,65 @@ class ToolHandlers:
             result["body"] = resp.json()
         except Exception:
             result["body"] = resp.text[:4000]
+        if payment_result:
+            result["payment"] = payment_result
         return result
+
+    async def _attempt_payment_retry(
+        self,
+        method: str,
+        url: str,
+        response: Any,
+        *,
+        kwargs: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, Any]:
+        auth_header = response.headers.get("WWW-Authenticate") or response.headers.get(
+            "www-authenticate"
+        )
+        if not auth_header or not auth_header.lower().startswith("payment "):
+            return None, response
+
+        challenge = PaymentChallenge(
+            type="mpp",
+            headers=dict(response.headers),
+            amount=0.0,
+            extra={
+                "resource": url,
+                "http_method": method,
+            },
+        )
+        try:
+            adapter = self._payments.resolve(challenge)
+            receipt = await adapter.execute(challenge, self._wallet)
+        except Exception:
+            return None, response
+
+        authorization_header = receipt.extra.get("authorization_header")
+        if not authorization_header:
+            return None, response
+
+        retry_headers = dict(kwargs.get("headers") or {})
+        retry_headers["Authorization"] = str(authorization_header)
+        retry_kwargs = dict(kwargs)
+        retry_kwargs["headers"] = retry_headers
+        retried = await self._plain_http_client.request(method, url, **retry_kwargs)
+        payment_result: dict[str, Any] = {
+            "protocol": receipt.protocol,
+            "amount": receipt.amount,
+            "currency": receipt.currency,
+            "retry_authorized": True,
+            "challenge_id": receipt.extra.get("challenge_id", ""),
+        }
+        payment_receipt = retried.headers.get("Payment-Receipt") or retried.headers.get(
+            "payment-receipt"
+        )
+        if payment_receipt:
+            payment_result["payment_receipt"] = payment_receipt
+        for key, value in receipt.extra.items():
+            if key == "authorization_header":
+                continue
+            payment_result[key] = value
+        return payment_result, retried
 
     def _build_capability_url(self, base_url: str, path: str) -> str:
         if path.startswith("http://") or path.startswith("https://"):

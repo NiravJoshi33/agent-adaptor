@@ -95,19 +95,24 @@ def build_payment_receipt_header(payload: dict[str, Any]) -> str:
 class MPPStripeAdapter(PaymentAdapter):
     def __init__(
         self,
-        secret_key: str,
+        secret_key: str | None = None,
+        shared_payment_token: str | None = None,
+        external_id: str | None = None,
         api_base: str = _STRIPE_API_BASE,
         api_version: str = STRIPE_MPP_API_VERSION,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._secret_key = secret_key
+        self._shared_payment_token = shared_payment_token
+        self._external_id = external_id
         self._api_base = api_base.rstrip("/")
         self._api_version = api_version
         self._owns_client = http_client is None
+        auth = (secret_key, "") if secret_key else None
         self._client = http_client or httpx.AsyncClient(
             base_url=self._api_base,
             timeout=30,
-            auth=(secret_key, ""),
+            auth=auth,
             headers={"Stripe-Version": api_version},
         )
 
@@ -118,7 +123,10 @@ class MPPStripeAdapter(PaymentAdapter):
     def can_handle(self, challenge: PaymentChallenge) -> bool:
         if challenge.type not in {"mpp", "mpp_stripe", "stripe_mpp", "stripe"}:
             return False
-        method = str((challenge.extra or {}).get("method", "")).lower()
+        method = str(
+            (challenge.extra or {}).get("payment_method", "")
+            or (challenge.extra or {}).get("method", "")
+        ).lower()
         if method and method != "stripe":
             return False
         return True
@@ -126,6 +134,12 @@ class MPPStripeAdapter(PaymentAdapter):
     async def execute(
         self, challenge: PaymentChallenge, wallet: Any
     ) -> PaymentReceipt:
+        if self._has_client_credentials(challenge):
+            return self._build_client_authorization_receipt(challenge)
+        if not self._secret_key:
+            raise ValueError(
+                "MPP Stripe settlement requires secret_key or client-side shared_payment_token"
+            )
         challenge_obj, request_obj = self._resolve_challenge(challenge)
         credential = self._resolve_credential(challenge)
         self._verify_challenge_binding(challenge_obj, request_obj, credential)
@@ -208,6 +222,59 @@ class MPPStripeAdapter(PaymentAdapter):
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+    def _has_client_credentials(self, challenge: PaymentChallenge) -> bool:
+        auth_header = (
+            challenge.headers.get("Authorization")
+            or challenge.headers.get("authorization")
+            or challenge.extra.get("authorization")
+            or challenge.extra.get("authorization_header")
+        )
+        if auth_header:
+            return False
+        token = (
+            challenge.extra.get("shared_payment_token")
+            or challenge.extra.get("spt")
+            or self._shared_payment_token
+        )
+        return bool(token)
+
+    def _build_client_authorization_receipt(
+        self, challenge: PaymentChallenge
+    ) -> PaymentReceipt:
+        challenge_obj, request_obj = self._resolve_challenge(challenge)
+        shared_payment_token = str(
+            challenge.extra.get("shared_payment_token")
+            or challenge.extra.get("spt")
+            or self._shared_payment_token
+            or ""
+        )
+        if not shared_payment_token.startswith("spt_"):
+            raise ValueError("MPP client flow requires a valid shared_payment_token")
+        payload: dict[str, Any] = {"spt": shared_payment_token}
+        external_id = (
+            challenge.extra.get("external_id")
+            or challenge.extra.get("externalId")
+            or self._external_id
+        )
+        if external_id:
+            payload["externalId"] = str(external_id)
+        credential = {
+            "challenge": challenge_obj,
+            "payload": payload,
+        }
+        authorization_header = "Payment " + build_payment_receipt_header(credential)
+        return PaymentReceipt(
+            protocol="mpp",
+            amount=challenge.amount or float(request_obj.get("amount", 0) or 0) / 100,
+            currency=str(request_obj.get("currency", "usd")).upper(),
+            extra={
+                "method": "stripe",
+                "authorization_header": authorization_header,
+                "challenge_id": challenge_obj["id"],
+                "credential": credential,
+            },
+        )
 
     def _resolve_challenge(
         self, challenge: PaymentChallenge
