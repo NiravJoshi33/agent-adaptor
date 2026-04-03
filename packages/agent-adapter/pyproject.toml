@@ -6,6 +6,8 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "agent-adapter-contracts",
     "aiosqlite>=0.20",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
     "cryptography>=44.0",
 ]
 
