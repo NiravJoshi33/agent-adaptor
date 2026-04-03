@@ -5,6 +5,8 @@ description = "Agent Adapter Runtime — turns any API into an autonomous econom
 requires-python = ">=3.12"
 dependencies = [
     "agent-adapter-contracts",
+    "aiosqlite>=0.20",
+    "cryptography>=44.0",
 ]
 
 [project.optional-dependencies]
