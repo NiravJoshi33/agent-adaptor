@@ -13,7 +13,7 @@ from agent_adapter.agent.loop import AgentLoop, DEFAULT_SYSTEM_PROMPT
 from agent_adapter.capabilities.manual import parse_manual_definitions
 from agent_adapter.capabilities.openapi import fetch_and_parse, parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
-from agent_adapter.config import apply_pricing_overlay, load_config
+from agent_adapter.config import apply_pricing_overlay, load_config, update_agent_config
 from agent_adapter.extensions import ExtensionRegistry, load_extensions
 from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.payments import PaymentRegistry, load_payment_registry
@@ -44,6 +44,14 @@ def _db_path(config: dict[str, Any], config_path: Path) -> Path:
         path = Path(raw)
         return path if path.is_absolute() else (config_path.parent / path).resolve()
     return _data_dir(config, config_path) / "adapter.db"
+
+
+def _effective_prompt(default_prompt: str, custom_prompt: str, append_to_default: bool) -> str:
+    if not custom_prompt:
+        return default_prompt if append_to_default else ""
+    if append_to_default:
+        return default_prompt + "\n\n## Provider Instructions\n" + custom_prompt
+    return custom_prompt
 
 
 async def _load_openapi_source(
@@ -403,6 +411,51 @@ class RuntimeContext:
     async def resume_agent(self) -> dict[str, Any]:
         self.agent_paused = False
         return {"status": "running"}
+
+    async def get_prompt_settings(self) -> dict[str, Any]:
+        prompt_path = _prompt_path(self.config, self.config_path)
+        custom_prompt = prompt_path.read_text() if prompt_path.exists() else ""
+        append_to_default = self.config.get("agent", {}).get("appendToDefault", True)
+        return {
+            "path": str(prompt_path),
+            "exists": prompt_path.exists(),
+            "append_to_default": append_to_default,
+            "custom_prompt": custom_prompt,
+            "default_prompt": DEFAULT_SYSTEM_PROMPT,
+            "effective_prompt": _effective_prompt(
+                DEFAULT_SYSTEM_PROMPT,
+                custom_prompt,
+                append_to_default,
+            ),
+        }
+
+    async def update_prompt_settings(
+        self,
+        *,
+        custom_prompt: str | None = None,
+        append_to_default: bool | None = None,
+    ) -> dict[str, Any]:
+        prompt_path = _prompt_path(self.config, self.config_path)
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        if custom_prompt is not None:
+            prompt_path.write_text(custom_prompt)
+
+        should_persist_path = (
+            custom_prompt is not None
+            or "systemPromptFile" not in self.config.get("agent", {})
+        )
+        if append_to_default is not None:
+            self.config.setdefault("agent", {})["appendToDefault"] = append_to_default
+            update_agent_config(
+                self.config_path,
+                append_to_default=append_to_default,
+                system_prompt_file=str(prompt_path) if should_persist_path else None,
+            )
+        elif should_persist_path:
+            update_agent_config(self.config_path, system_prompt_file=str(prompt_path))
+
+        self._agent_loop = None
+        return await self.get_prompt_settings()
 
     async def ensure_agent_loop(self) -> AgentLoop | None:
         if self._agent_loop is not None:

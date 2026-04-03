@@ -52,6 +52,17 @@ def _parser() -> argparse.ArgumentParser:
     decisions = agent_sub.add_parser("decisions")
     decisions.add_argument("--limit", type=int, default=20)
 
+    prompt = sub.add_parser("prompt")
+    prompt_sub = prompt.add_subparsers(dest="prompt_command", required=True)
+    prompt_sub.add_parser("show")
+    prompt_set = prompt_sub.add_parser("set")
+    prompt_set.add_argument("--content")
+    prompt_set.add_argument("--file")
+    prompt_mode = prompt_sub.add_parser("mode")
+    mode_group = prompt_mode.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--append", action="store_true")
+    mode_group.add_argument("--replace", action="store_true")
+
     caps = sub.add_parser("capabilities")
     caps_sub = caps.add_subparsers(dest="caps_command", required=True)
     caps_sub.add_parser("list")
@@ -182,6 +193,27 @@ async def _run_agent_command(args: argparse.Namespace) -> Any:
         await runtime.close()
 
 
+async def _run_prompt_command(args: argparse.Namespace) -> Any:
+    runtime = await create_runtime(args.config)
+    try:
+        if args.prompt_command == "show":
+            return await runtime.get_prompt_settings()
+        if args.prompt_command == "set":
+            content = args.content
+            if args.file:
+                content = Path(args.file).read_text()
+            if content is None:
+                raise ValueError("Provide --content or --file for prompt set.")
+            return await runtime.update_prompt_settings(custom_prompt=content)
+        if args.prompt_command == "mode":
+            return await runtime.update_prompt_settings(
+                append_to_default=True if args.append else False
+            )
+        raise ValueError(f"Unknown prompt command: {args.prompt_command}")
+    finally:
+        await runtime.close()
+
+
 async def _run_start(args: argparse.Namespace) -> None:
     runtime = await create_runtime(args.config)
     app = create_management_app(runtime)
@@ -234,6 +266,9 @@ def app(argv: list[str] | None = None) -> None:
         return
     if args.command == "agent":
         _print(asyncio.run(_run_agent_command(args)))
+        return
+    if args.command == "prompt":
+        _print(asyncio.run(_run_prompt_command(args)))
         return
     if args.command == "start":
         try:

@@ -66,6 +66,10 @@ class AgentLoop:
             prompt += "\n\n## Provider Instructions\n" + custom_prompt
         self._system_prompt = prompt
 
+    @property
+    def system_prompt(self) -> str:
+        return self._system_prompt
+
     async def run_once(self, user_message: str = "Begin your planning loop.") -> str:
         """Run a single agent turn: plan → tool calls → observe → repeat until done.
 

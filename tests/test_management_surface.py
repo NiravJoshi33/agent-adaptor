@@ -70,6 +70,7 @@ def _write_config(path: Path, spec_path: Path) -> None:
                 "agent": {
                     "provider": "openrouter",
                     "model": "openai/gpt-oss-120b",
+                    "apiKey": "test-key",
                     "systemPromptFile": str(path.parent / "prompts" / "system.md"),
                     "appendToDefault": True,
                 },
@@ -163,6 +164,46 @@ class CLITests(unittest.TestCase):
             self.assertEqual(listed["capabilities"][0]["pricing"]["amount"], 0.05)
             self.assertEqual(listed["capabilities"][0]["status"], "disabled")
 
+    def test_cli_prompt_commands_update_content_and_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "openapi.yaml"
+            config_path = root / "agent-adapter.yaml"
+            _write_openapi_spec(spec_path)
+            _write_config(config_path, spec_path)
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "prompt", "show"])
+            prompt_state = json.loads(stdout.getvalue())
+            self.assertTrue(prompt_state["append_to_default"])
+            self.assertIn("Keep bids conservative.", prompt_state["effective_prompt"])
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "prompt", "mode", "--replace"])
+            prompt_state = json.loads(stdout.getvalue())
+            self.assertFalse(prompt_state["append_to_default"])
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "prompt",
+                        "set",
+                        "--content",
+                        "Only take premium work.",
+                    ]
+                )
+            prompt_state = json.loads(stdout.getvalue())
+            self.assertEqual(prompt_state["custom_prompt"], "Only take premium work.")
+            self.assertEqual(prompt_state["effective_prompt"], "Only take premium work.")
+
+            config = yaml.safe_load(config_path.read_text())
+            self.assertFalse(config["agent"]["appendToDefault"])
+
 
 class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -239,6 +280,45 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         resumed = (await self.client.post("/manage/agent/resume")).json()
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(resumed["status"], "running")
+
+    async def test_management_api_updates_prompt_and_rebuilds_agent_loop(self) -> None:
+        prompt = (await self.client.get("/manage/agent/prompt")).json()
+        self.assertTrue(prompt["append_to_default"])
+        self.assertIn("Keep bids conservative.", prompt["effective_prompt"])
+
+        updated = (
+            await self.client.put(
+                "/manage/agent/prompt",
+                json={
+                    "custom_prompt": "Only accept high-margin jobs.",
+                    "append_to_default": False,
+                },
+            )
+        ).json()
+        self.assertFalse(updated["append_to_default"])
+        self.assertEqual(updated["effective_prompt"], "Only accept high-margin jobs.")
+
+        agent = await self.runtime.ensure_agent_loop()
+        self.assertIsNotNone(agent)
+        assert agent is not None
+        self.assertEqual(agent.system_prompt, "Only accept high-margin jobs.")
+
+        updated = (
+            await self.client.put(
+                "/manage/agent/prompt",
+                json={
+                    "custom_prompt": "Keep inventory risk near zero.",
+                    "append_to_default": True,
+                },
+            )
+        ).json()
+        self.assertTrue(updated["append_to_default"])
+        self.assertIn("## Provider Instructions", updated["effective_prompt"])
+        self.assertIn("Keep inventory risk near zero.", updated["effective_prompt"])
+
+        agent = await self.runtime.ensure_agent_loop()
+        assert agent is not None
+        self.assertIn("Keep inventory risk near zero.", agent.system_prompt)
 
     async def test_dashboard_pages_render_and_capability_refresh_surfaces_drift(self) -> None:
         overview = await self.client.get("/dashboard/")

@@ -29,6 +29,27 @@ def load_config(path: str | Path = "agent-adapter.yaml") -> dict[str, Any]:
         return _resolve_env_vars(yaml.safe_load(f))
 
 
+def update_agent_config(
+    path: str | Path,
+    *,
+    system_prompt_file: str | None = None,
+    append_to_default: bool | None = None,
+) -> dict[str, Any]:
+    """Update agent config fields while preserving unrelated YAML values."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config not found: {p}")
+    with open(p) as f:
+        config = yaml.safe_load(f) or {}
+    agent = config.setdefault("agent", {})
+    if system_prompt_file is not None:
+        agent["systemPromptFile"] = system_prompt_file
+    if append_to_default is not None:
+        agent["appendToDefault"] = append_to_default
+    p.write_text(yaml.safe_dump(config, sort_keys=False))
+    return config
+
+
 def apply_pricing_overlay(
     registry: Any, pricing_config: dict[str, dict]
 ) -> None:

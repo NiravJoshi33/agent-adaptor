@@ -18,6 +18,11 @@ class CapabilityPricingRequest(BaseModel):
     ceiling: float = 0.0
 
 
+class PromptUpdateRequest(BaseModel):
+    custom_prompt: str | None = None
+    append_to_default: bool | None = None
+
+
 def create_management_app(runtime: RuntimeContext) -> FastAPI:
     app = FastAPI(
         title="Agent Adapter Management API",
@@ -87,6 +92,17 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
     @app.get("/manage/agent/decisions")
     async def list_decisions(limit: int = 50):
         return {"decisions": await runtime.list_decisions(limit)}
+
+    @app.get("/manage/agent/prompt")
+    async def get_agent_prompt():
+        return await runtime.get_prompt_settings()
+
+    @app.put("/manage/agent/prompt")
+    async def update_agent_prompt(request: PromptUpdateRequest):
+        return await runtime.update_prompt_settings(
+            custom_prompt=request.custom_prompt,
+            append_to_default=request.append_to_default,
+        )
 
     @app.post("/manage/agent/pause")
     async def pause_agent():
