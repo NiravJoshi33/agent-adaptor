@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS inbound_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type  TEXT NOT NULL DEFAULT '',
+    source       TEXT NOT NULL DEFAULT '',
+    channel      TEXT NOT NULL DEFAULT '',
+    event_type   TEXT NOT NULL DEFAULT '',
+    payload      TEXT NOT NULL DEFAULT '',
+    headers      TEXT NOT NULL DEFAULT '{}',
+    received_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    delivered_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS platforms (
     base_url            TEXT PRIMARY KEY,
     platform_name       TEXT,

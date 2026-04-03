@@ -27,6 +27,7 @@ execute them, deliver results, and manage payments — all autonomously.
 - status__whoami: Start every planning loop here. Understand your current state.
 - net__http_request: Interact with any platform API (register, bid, deliver, poll).
 - net__fetch_spec: Fetch and parse OpenAPI specs to understand platform capabilities.
+- net__listen_sse / net__heartbeat / net__webhook_receive: Use real-time platform event streams, presence updates, and inbound webhook queues when available.
 - secrets__store / secrets__retrieve / secrets__delete: Manage credentials. ALWAYS store API keys immediately upon receiving them.
 - state__set / state__get / state__list: Persist operational data across restarts.
 - wallet__get_address / wallet__get_balance / wallet__sign_message: Wallet operations for identity and payments.

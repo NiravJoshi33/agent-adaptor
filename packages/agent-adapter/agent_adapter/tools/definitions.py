@@ -45,6 +45,40 @@ class net__fetch_spec(BaseModel):
     url: str = Field(description="URL to the OpenAPI JSON or YAML spec")
 
 
+class net__listen_sse(BaseModel):
+    """Connect to a Server-Sent Events endpoint, collect a bounded number of events, and optionally persist them for later processing."""
+
+    url: str = Field(description="Full SSE endpoint URL")
+    headers: dict[str, str] = Field(default_factory=dict, description="Request headers")
+    params: dict[str, str] = Field(default_factory=dict, description="Query parameters")
+    max_events: int = Field(default=5, description="Maximum number of SSE events to collect")
+    timeout_seconds: float = Field(default=10.0, description="Maximum time to wait for SSE events")
+    channel: str = Field(default="", description="Optional channel key used when persisting events")
+    store_events: bool = Field(default=True, description="Whether to store received events in the local inbound event queue")
+
+
+class net__heartbeat(BaseModel):
+    """Send a one-shot heartbeat or presence update to a platform endpoint and persist the latest heartbeat result locally."""
+
+    url: str = Field(description="Heartbeat endpoint URL")
+    method: str = Field(default="POST", description="HTTP method, usually POST or PUT")
+    headers: dict[str, str] = Field(default_factory=dict, description="Request headers")
+    params: dict[str, str] = Field(default_factory=dict, description="Query parameters")
+    body: dict | list | str | None = Field(default=None, description="Optional heartbeat payload")
+    namespace: str = Field(default="heartbeats", description="State namespace where the latest heartbeat result is stored")
+    key: str = Field(default="", description="State key for the heartbeat record; defaults to the URL")
+
+
+class net__webhook_receive(BaseModel):
+    """Read pending inbound webhook or SSE events from the local queue and optionally acknowledge them."""
+
+    source_type: str = Field(default="", description="Optional source filter: webhook or sse")
+    channel: str = Field(default="", description="Optional channel filter")
+    limit: int = Field(default=20, description="Maximum number of events to return")
+    acknowledge: bool = Field(default=True, description="Whether to mark returned events as delivered")
+    pending_only: bool = Field(default=True, description="Whether to return only undelivered events")
+
+
 # ── Secrets tools ──────────────────────────────────────────────────────
 
 
@@ -154,6 +188,9 @@ CORE_TOOL_MODELS: list[type[BaseModel]] = [
     status__whoami,
     net__http_request,
     net__fetch_spec,
+    net__listen_sse,
+    net__heartbeat,
+    net__webhook_receive,
     secrets__store,
     secrets__retrieve,
     secrets__delete,

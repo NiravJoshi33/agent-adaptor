@@ -206,6 +206,15 @@ class FakeOpenAIClient:
         self.chat = FakeChat(response)
 
 
+class FakeSSEStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
 class FakeEntryPoint:
     def __init__(self, name: str, value: str) -> None:
         self.name = name
@@ -663,6 +672,81 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         result = json.loads(raw)
         self.assertEqual(bytes.fromhex(result["signed_transaction"]), b"abc-signed")
+
+    async def test_operational_tools_handle_sse_and_heartbeat(self) -> None:
+        calls: list[tuple[str, str, dict[str, Any]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.method, str(request.url), dict(request.headers)))
+            if request.url.path == "/events":
+                stream = FakeSSEStream(
+                    [
+                        b"id: evt-1\n",
+                        b"event: task.created\n",
+                        b"data: {\"task_id\":\"t1\"}\n\n",
+                        b"data: plain-text\n\n",
+                    ]
+                )
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    stream=stream,
+                )
+            if request.url.path == "/heartbeat":
+                return httpx.Response(200, json={"ok": True, "presence": "alive"})
+            raise AssertionError(f"Unexpected request path: {request.url.path}")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            plain_http_client=client,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        sse = json.loads(
+            await handlers.dispatch(
+                "net__listen_sse",
+                {
+                    "url": "http://events.test/events",
+                    "max_events": 2,
+                    "channel": "tasknet",
+                },
+            )
+        )
+        self.assertEqual(sse["count"], 2)
+        self.assertEqual(sse["events"][0]["event"], "task.created")
+        self.assertEqual(sse["events"][0]["data"], {"task_id": "t1"})
+        self.assertEqual(sse["events"][1]["data"], "plain-text")
+
+        queued = json.loads(
+            await handlers.dispatch(
+                "net__webhook_receive",
+                {"source_type": "sse", "channel": "tasknet", "limit": 10},
+            )
+        )
+        self.assertEqual(queued["count"], 2)
+        self.assertEqual(queued["events"][0]["channel"], "tasknet")
+
+        heartbeat = json.loads(
+            await handlers.dispatch(
+                "net__heartbeat",
+                {
+                    "url": "http://events.test/heartbeat",
+                    "method": "POST",
+                    "body": {"agent": "alpha"},
+                    "key": "tasknet",
+                },
+            )
+        )
+        self.assertEqual(heartbeat["status_code"], 200)
+        state_row = await self.state.get("heartbeats", "tasknet")
+        self.assertEqual(state_row["response_body"], {"ok": True, "presence": "alive"})
+        self.assertEqual(calls[0][0], "GET")
+        self.assertEqual(calls[1][0], "POST")
 
 
 class LoaderTests(unittest.TestCase):

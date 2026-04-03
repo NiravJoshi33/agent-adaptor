@@ -442,6 +442,33 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         assert agent is not None
         self.assertIn("Keep inventory risk near zero.", agent.system_prompt)
 
+    async def test_webhook_receiver_persists_events_for_agent_consumption(self) -> None:
+        received = (
+            await self.client.post(
+                "/webhooks/tasknet?event=task.created",
+                json={"task_id": "task-42", "price": 1.25},
+                headers={"x-event-type": "task.created"},
+            )
+        ).json()
+        self.assertTrue(received["received"])
+
+        events = (await self.client.get("/manage/events?channel=tasknet")).json()["events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "task.created")
+        self.assertEqual(events[0]["payload"]["task_id"], "task-42")
+
+        consumed = json.loads(
+            await self.runtime.handlers.dispatch(
+                "net__webhook_receive",
+                {"channel": "tasknet", "source_type": "webhook", "acknowledge": True},
+            )
+        )
+        self.assertEqual(consumed["count"], 1)
+        self.assertEqual(consumed["events"][0]["payload"]["price"], 1.25)
+
+        pending = (await self.client.get("/manage/events?channel=tasknet")).json()["events"]
+        self.assertEqual(pending, [])
+
     async def test_dashboard_pages_render_and_capability_refresh_surfaces_drift(self) -> None:
         overview = await self.client.get("/dashboard/")
         self.assertEqual(overview.status_code, 200)

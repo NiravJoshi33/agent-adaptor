@@ -16,6 +16,11 @@ from agent_adapter.capabilities.mcp import fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import fetch_and_parse, parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.config import apply_pricing_overlay, load_config, update_agent_config
+from agent_adapter.events import (
+    acknowledge_inbound_events,
+    list_inbound_events,
+    record_inbound_event,
+)
 from agent_adapter.extensions import ExtensionRegistry, load_extensions
 from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.payments import PaymentRegistry, load_payment_registry
@@ -466,6 +471,49 @@ class RuntimeContext:
 
         self._agent_loop = None
         return await self.get_prompt_settings()
+
+    async def record_inbound_event(
+        self,
+        *,
+        source_type: str,
+        source: str,
+        channel: str,
+        event_type: str,
+        payload: Any,
+        headers: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await record_inbound_event(
+            self.db,
+            source_type=source_type,
+            source=source,
+            channel=channel,
+            event_type=event_type,
+            payload=payload,
+            headers=headers,
+        )
+
+    async def list_inbound_events(
+        self,
+        *,
+        source_type: str | None = None,
+        channel: str | None = None,
+        limit: int = 20,
+        pending_only: bool = True,
+        acknowledge: bool = False,
+    ) -> list[dict[str, Any]]:
+        events = await list_inbound_events(
+            self.db,
+            source_type=source_type,
+            channel=channel,
+            limit=limit,
+            pending_only=pending_only,
+        )
+        if acknowledge:
+            await acknowledge_inbound_events(
+                self.db,
+                [int(event["id"]) for event in events if event.get("id") is not None],
+            )
+        return events
 
     async def record_llm_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
         prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+import json
+
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from agent_adapter.management.dashboard import mount_dashboard
@@ -85,6 +87,24 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
     async def list_jobs(limit: int = 20):
         return {"jobs": await runtime.list_jobs(limit)}
 
+    @app.get("/manage/events")
+    async def get_events(
+        source_type: str = "",
+        channel: str = "",
+        limit: int = 20,
+        pending_only: bool = True,
+        acknowledge: bool = False,
+    ):
+        return {
+            "events": await runtime.list_inbound_events(
+                source_type=source_type or None,
+                channel=channel or None,
+                limit=limit,
+                pending_only=pending_only,
+                acknowledge=acknowledge,
+            )
+        }
+
     @app.get("/manage/metrics")
     async def get_metrics(days: int = 30):
         return await runtime.get_metrics_summary(days)
@@ -119,5 +139,30 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
     @app.post("/manage/agent/resume")
     async def resume_agent():
         return await runtime.resume_agent()
+
+    @app.post("/webhooks/{channel}")
+    async def receive_webhook(channel: str, request: Request):
+        raw = await request.body()
+        payload: object
+        try:
+            payload = json.loads(raw.decode()) if raw else {}
+        except Exception:
+            payload = raw.decode(errors="replace")
+        headers = {k: v for k, v in request.headers.items()}
+        event_type = (
+            headers.get("x-event-type")
+            or request.query_params.get("event")
+            or (payload.get("type") if isinstance(payload, dict) else "")
+            or "webhook"
+        )
+        event = await runtime.record_inbound_event(
+            source_type="webhook",
+            source=str(request.url),
+            channel=channel,
+            event_type=str(event_type),
+            payload=payload,
+            headers=headers,
+        )
+        return {"received": True, "event_id": event["id"], "channel": channel}
 
     return app

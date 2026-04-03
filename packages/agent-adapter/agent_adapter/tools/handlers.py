@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
@@ -11,6 +12,11 @@ from urllib.parse import quote
 import httpx
 
 from agent_adapter.capabilities.mcp import call_mcp_tool, fetch_mcp_capabilities
+from agent_adapter.events import (
+    acknowledge_inbound_events,
+    list_inbound_events,
+    record_inbound_event,
+)
 from agent_adapter.capabilities.openapi import fetch_and_parse
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.payments.registry import PaymentRegistry
@@ -145,6 +151,126 @@ class ToolHandlers:
             "count": len(caps),
             "spec_hash": content_hash,
         }
+
+    async def _handle_net__listen_sse(self, args: dict) -> dict:
+        url = args["url"]
+        headers = {"Accept": "text/event-stream", **(args.get("headers") or {})}
+        params = args.get("params") or {}
+        max_events = max(int(args.get("max_events", 5) or 5), 1)
+        timeout_seconds = float(args.get("timeout_seconds", 10.0) or 10.0)
+        channel = args.get("channel") or url
+        store_events = bool(args.get("store_events", True))
+
+        events: list[dict[str, Any]] = []
+        buffer: dict[str, Any] = {"data_lines": []}
+        started_at = datetime.now(timezone.utc).isoformat()
+
+        async def consume() -> None:
+            async with self._plain_http_client.stream(
+                "GET",
+                url,
+                headers=headers,
+                params=params,
+                timeout=timeout_seconds,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line == "":
+                        event = self._finalize_sse_event(buffer)
+                        if event:
+                            if store_events and self._db is not None:
+                                stored = await record_inbound_event(
+                                    self._db,
+                                    source_type="sse",
+                                    source=url,
+                                    channel=channel,
+                                    event_type=event.get("event", "message"),
+                                    payload=event,
+                                    headers=headers,
+                                )
+                                event["event_id"] = stored["id"]
+                            events.append(event)
+                            if len(events) >= max_events:
+                                break
+                        buffer.clear()
+                        buffer["data_lines"] = []
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    field, _, value = line.partition(":")
+                    value = value[1:] if value.startswith(" ") else value
+                    if field == "data":
+                        buffer.setdefault("data_lines", []).append(value)
+                    else:
+                        buffer[field] = value
+                trailing = self._finalize_sse_event(buffer)
+                if trailing and len(events) < max_events:
+                    if store_events and self._db is not None:
+                        stored = await record_inbound_event(
+                            self._db,
+                            source_type="sse",
+                            source=url,
+                            channel=channel,
+                            event_type=trailing.get("event", "message"),
+                            payload=trailing,
+                            headers=headers,
+                        )
+                        trailing["event_id"] = stored["id"]
+                    events.append(trailing)
+
+        try:
+            await asyncio.wait_for(consume(), timeout=timeout_seconds + 1)
+            completion_reason = "stream_exhausted" if len(events) < max_events else "max_events"
+        except asyncio.TimeoutError:
+            completion_reason = "timeout"
+
+        return {
+            "url": url,
+            "channel": channel,
+            "events": events[:max_events],
+            "count": len(events[:max_events]),
+            "completion_reason": completion_reason,
+            "started_at": started_at,
+        }
+
+    async def _handle_net__heartbeat(self, args: dict) -> dict:
+        sent_at = datetime.now(timezone.utc).isoformat()
+        response = await self._request_http(
+            args.get("method", "POST"),
+            args["url"],
+            headers=args.get("headers"),
+            params=args.get("params"),
+            body=args.get("body"),
+        )
+        state_key = args.get("key") or args["url"]
+        heartbeat_state = {
+            "url": args["url"],
+            "method": args.get("method", "POST").upper(),
+            "status_code": response["status_code"],
+            "sent_at": sent_at,
+            "response_body": response.get("body"),
+        }
+        await self._state.set(args.get("namespace", "heartbeats"), state_key, heartbeat_state)
+        return heartbeat_state
+
+    async def _handle_net__webhook_receive(self, args: dict) -> dict:
+        if self._db is None:
+            raise ValueError("Webhook queue requires database access")
+        events = await list_inbound_events(
+            self._db,
+            source_type=args.get("source_type") or None,
+            channel=args.get("channel") or None,
+            limit=int(args.get("limit", 20) or 20),
+            pending_only=bool(args.get("pending_only", True)),
+        )
+        if args.get("acknowledge", True):
+            await acknowledge_inbound_events(
+                self._db,
+                [int(event["id"]) for event in events if event.get("id") is not None],
+            )
+            for event in events:
+                event["delivered_at"] = datetime.now(timezone.utc).isoformat()
+        return {"events": events, "count": len(events)}
 
     # ── Secrets ────────────────────────────────────────────────────
 
@@ -483,3 +609,25 @@ class ToolHandlers:
             await self._plain_http_client.aclose()
         if self._x402_http_client and hasattr(self._x402_http_client, "aclose"):
             await self._x402_http_client.aclose()
+
+    def _finalize_sse_event(self, buffer: dict[str, Any]) -> dict[str, Any] | None:
+        if not buffer or not buffer.get("data_lines") and not any(
+            key in buffer for key in ("event", "id", "retry")
+        ):
+            return None
+        data = "\n".join(buffer.get("data_lines", []))
+        payload: Any = data
+        if data:
+            try:
+                payload = json.loads(data)
+            except Exception:
+                payload = data
+        event: dict[str, Any] = {
+            "event": buffer.get("event", "message"),
+            "data": payload,
+        }
+        if "id" in buffer:
+            event["id"] = buffer["id"]
+        if "retry" in buffer:
+            event["retry"] = buffer["retry"]
+        return event
