@@ -7,6 +7,15 @@ function badge(status) {
   return `<span class="badge ${status}">${status.replace(/_/g, " ")}</span>`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function formatPricing(pricing) {
   if (!pricing) {
     return `<span class="price-pill">Unset</span>`;
@@ -47,7 +56,64 @@ function setActiveNav() {
   });
 }
 
-function renderCapabilities(capabilities, targetId) {
+function capabilityEditor(cap) {
+  const pricing = cap.pricing || {};
+  return `
+    <tr data-capability="${escapeHtml(cap.name)}">
+      <td>
+        <div class="capability-name">${escapeHtml(cap.name)}</div>
+        <div class="capability-subtitle">${escapeHtml(cap.description || cap.source_ref || "")}</div>
+      </td>
+      <td>
+        <div class="status-stack">
+          ${badge(cap.status)}
+          ${cap.drift_status && cap.drift_status !== cap.status ? `<div class="drift-copy">drift: ${escapeHtml(cap.drift_status.replace(/_/g, " "))}</div>` : `<div class="drift-copy">drift: unchanged</div>`}
+        </div>
+      </td>
+      <td>
+        <form class="capability-pricing-form">
+          <div class="inline-fields">
+            <label>
+              <span>Amount</span>
+              <input name="amount" type="number" step="0.001" min="0" value="${pricing.amount ?? ""}" />
+            </label>
+            <label>
+              <span>Model</span>
+              <select name="model">
+                ${["per_call", "per_item", "per_token", "quoted"].map((model) => `<option value="${model}" ${pricing.model === model ? "selected" : ""}>${model}</option>`).join("")}
+              </select>
+            </label>
+            <label>
+              <span>Currency</span>
+              <input name="currency" value="${escapeHtml(pricing.currency || "USDC")}" />
+            </label>
+          </div>
+          <div class="inline-fields">
+            <label>
+              <span>Item Field</span>
+              <input name="item_field" value="${escapeHtml(pricing.item_field || "")}" />
+            </label>
+            <label>
+              <span>Floor</span>
+              <input name="floor" type="number" step="0.001" min="0" value="${pricing.floor ?? 0}" />
+            </label>
+            <label>
+              <span>Ceiling</span>
+              <input name="ceiling" type="number" step="0.001" min="0" value="${pricing.ceiling ?? 0}" />
+            </label>
+          </div>
+          <div class="action-row">
+            <button type="submit" class="button small">Save pricing</button>
+            <button type="button" class="button secondary small capability-toggle">${cap.enabled ? "Disable" : "Enable"}</button>
+          </div>
+        </form>
+      </td>
+      <td><span class="source-chip">${escapeHtml(cap.source)}</span></td>
+    </tr>
+  `;
+}
+
+function renderCapabilities(capabilities, targetId, editable = false) {
   const target = document.getElementById(targetId);
   if (!target) return;
   if (!capabilities.length) {
@@ -60,25 +126,25 @@ function renderCapabilities(capabilities, targetId) {
         <tr>
           <th>Name</th>
           <th>Status</th>
-          <th>Pricing</th>
+          <th>${editable ? "Controls" : "Pricing"}</th>
           <th>Source</th>
         </tr>
       </thead>
       <tbody>
-        ${capabilities.map((cap) => `
+        ${capabilities.map((cap) => editable ? capabilityEditor(cap) : `
           <tr>
             <td>
-              <div class="capability-name">${cap.name}</div>
-              <div class="capability-subtitle">${cap.description || cap.source_ref || ""}</div>
+              <div class="capability-name">${escapeHtml(cap.name)}</div>
+              <div class="capability-subtitle">${escapeHtml(cap.description || cap.source_ref || "")}</div>
             </td>
             <td>
               <div class="status-stack">
                 ${badge(cap.status)}
-                ${cap.drift_status && cap.drift_status !== cap.status ? `<div class="drift-copy">drift: ${cap.drift_status.replace(/_/g, " ")}</div>` : `<div class="drift-copy">drift: unchanged</div>`}
+                ${cap.drift_status && cap.drift_status !== cap.status ? `<div class="drift-copy">drift: ${escapeHtml(cap.drift_status.replace(/_/g, " "))}</div>` : `<div class="drift-copy">drift: unchanged</div>`}
               </div>
             </td>
             <td>${formatPricing(cap.pricing)}</td>
-            <td><span class="source-chip">${cap.source}</span></td>
+            <td><span class="source-chip">${escapeHtml(cap.source)}</span></td>
           </tr>
         `).join("")}
       </tbody>
@@ -114,6 +180,144 @@ function renderAgent(status, decisions) {
         <pre>${JSON.stringify(entry.detail, null, 2)}</pre>
       </div>
     `).join("");
+  }
+}
+
+function renderPrompt(prompt) {
+  const editor = document.getElementById("prompt-editor");
+  if (editor) {
+    editor.innerHTML = `
+      <form id="prompt-form" class="stack-form">
+        <div class="radio-row">
+          <label class="option-pill">
+            <input type="radio" name="prompt_mode" value="append" ${prompt.append_to_default ? "checked" : ""} />
+            <span>Append to default</span>
+          </label>
+          <label class="option-pill">
+            <input type="radio" name="prompt_mode" value="replace" ${prompt.append_to_default ? "" : "checked"} />
+            <span>Replace default</span>
+          </label>
+        </div>
+        <label class="stack-field">
+          <span>Custom Prompt</span>
+          <textarea name="custom_prompt" rows="16">${escapeHtml(prompt.custom_prompt || "")}</textarea>
+        </label>
+        <div class="action-row">
+          <button type="submit" class="button">Save prompt</button>
+          <span class="muted">Changes hot-reload before the next agent loop run.</span>
+        </div>
+      </form>
+    `;
+  }
+
+  const preview = document.getElementById("prompt-preview");
+  if (preview) {
+    preview.innerHTML = `
+      <div class="code-panel">
+        <div class="label">Path</div>
+        <div class="meta-line">${escapeHtml(prompt.path || "")}</div>
+        <pre>${escapeHtml(prompt.effective_prompt || "")}</pre>
+      </div>
+    `;
+  }
+}
+
+function renderWallet(wallet) {
+  const address = document.getElementById("wallet-address");
+  if (address) address.textContent = wallet.address || "unknown";
+
+  const balances = document.getElementById("wallet-balances");
+  if (balances) {
+    const map = wallet.balances || {};
+    balances.textContent = `${map.sol || 0} SOL / ${map.usdc || 0} USDC`;
+  }
+
+  const provider = document.getElementById("wallet-provider");
+  if (provider) {
+    const cluster = wallet.cluster || wallet.chain || "runtime default";
+    provider.textContent = `${wallet.provider || "unknown"} / ${cluster}`;
+  }
+
+  const alert = document.getElementById("wallet-alert");
+  if (alert) {
+    alert.textContent = wallet.low_balance?.active
+      ? `${Object.keys(wallet.low_balance.below_threshold || {}).join(" + ")} low`
+      : "healthy";
+  }
+
+  const actions = document.getElementById("wallet-actions");
+  if (actions) {
+    actions.innerHTML = `
+      <div class="stack-form">
+        <div class="action-row">
+          <button id="wallet-export" class="button" ${wallet.export_supported ? "" : "disabled"}>Export key</button>
+          <span class="muted">${wallet.export_supported ? "Exports the current local wallet secret." : "Current provider does not support export."}</span>
+        </div>
+        <label class="stack-field">
+          <span>Exported Secret</span>
+          <textarea id="wallet-export-output" rows="4" readonly placeholder="Exported secret will appear here"></textarea>
+        </label>
+        <form id="wallet-import-form" class="stack-form">
+          <label class="stack-field">
+            <span>Import Solana Raw Secret</span>
+            <textarea name="secret_key" rows="4" placeholder="Paste a base58 secret key"></textarea>
+          </label>
+          <div class="action-row">
+            <button type="submit" class="button secondary">Import and persist</button>
+            <span class="muted">Restart required: ${wallet.import_requires_restart ? "yes" : "no"}</span>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  const faucets = document.getElementById("wallet-faucets");
+  if (faucets) {
+    const links = wallet.faucet_links || [];
+    faucets.innerHTML = links.length
+      ? `<div class="ops-stack">${links.map((item) => `
+          <a class="ops-item faucet-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">
+            <div class="ops-item-header">
+              <div>
+                <strong>${escapeHtml(item.label)}</strong>
+                <div class="muted">${escapeHtml(item.url)}</div>
+              </div>
+            </div>
+          </a>
+        `).join("")}</div>`
+      : `<div class="card"><span class="label">Funding Links</span><strong>No faucet shortcuts for this wallet</strong><p class="card-foot">Mainnet or custom wallet configurations usually require manual funding.</p></div>`;
+  }
+
+  const activity = document.getElementById("wallet-activity");
+  if (activity) {
+    const rows = wallet.payment_activity || [];
+    activity.innerHTML = rows.length
+      ? `
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>Status</th>
+              <th>Payment</th>
+              <th>When</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>
+                  <div class="capability-name">${escapeHtml(row.capability)}</div>
+                  <div class="capability-subtitle">${escapeHtml(row.platform || "")}</div>
+                </td>
+                <td>${badge(row.status || "pending")}</td>
+                <td><span class="price-pill">${formatMoney(row.payment_amount || 0, row.payment_currency || "USDC")} <span class="muted">(${escapeHtml(row.payment_protocol || "free")})</span></span></td>
+                <td><span class="muted">${escapeHtml(formatTimestamp(row.completed_at || row.created_at))}</span></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `
+      : `<div class="card"><span class="label">Payment Activity</span><strong>No payment activity recorded</strong><p class="card-foot">Completed paid jobs and local settlement history will surface here.</p></div>`;
   }
 }
 
@@ -360,6 +564,100 @@ async function postJSON(url) {
   return response.json();
 }
 
+async function fetchJSON(url, options = {}) {
+  const response = await fetch(url, {
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.error || `Request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+function wireCapabilityControls() {
+  document.querySelectorAll("[data-capability]").forEach((row) => {
+    const capability = row.getAttribute("data-capability");
+    const form = row.querySelector(".capability-pricing-form");
+    const toggle = row.querySelector(".capability-toggle");
+    if (form && capability) {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const data = new FormData(form);
+        await fetchJSON(`/manage/capabilities/${encodeURIComponent(capability)}/pricing`, {
+          method: "PUT",
+          body: JSON.stringify({
+            model: data.get("model"),
+            amount: Number(data.get("amount") || 0),
+            currency: data.get("currency") || "USDC",
+            item_field: data.get("item_field") || "",
+            floor: Number(data.get("floor") || 0),
+            ceiling: Number(data.get("ceiling") || 0),
+          }),
+        });
+        const payload = await postJSON("/manage/capabilities/refresh");
+        renderCapabilities(payload.capabilities || [], "capabilities-table", true);
+        wireCapabilityControls();
+      });
+    }
+    if (toggle && capability) {
+      toggle.addEventListener("click", async () => {
+        const action = toggle.textContent?.trim().toLowerCase() === "disable" ? "disable" : "enable";
+        await postJSON(`/manage/capabilities/${encodeURIComponent(capability)}/${action}`);
+        const payload = await postJSON("/manage/capabilities/refresh");
+        renderCapabilities(payload.capabilities || [], "capabilities-table", true);
+        wireCapabilityControls();
+      });
+    }
+  });
+}
+
+function wirePromptControls() {
+  const form = document.getElementById("prompt-form");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const append = data.get("prompt_mode") === "append";
+    const prompt = await fetchJSON("/manage/agent/prompt", {
+      method: "PUT",
+      body: JSON.stringify({
+        custom_prompt: data.get("custom_prompt") || "",
+        append_to_default: append,
+      }),
+    });
+    renderPrompt(prompt);
+    wirePromptControls();
+  });
+}
+
+function wireWalletControls() {
+  const exportButton = document.getElementById("wallet-export");
+  const exportOutput = document.getElementById("wallet-export-output");
+  if (exportButton && exportOutput) {
+    exportButton.addEventListener("click", async () => {
+      const payload = await fetchJSON("/manage/wallet/export", { method: "POST" });
+      exportOutput.value = payload.secret_key || "";
+    });
+  }
+
+  const importForm = document.getElementById("wallet-import-form");
+  if (importForm) {
+    importForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(importForm);
+      const payload = await fetchJSON("/manage/wallet/import", {
+        method: "PUT",
+        body: JSON.stringify({ secret_key: data.get("secret_key") || "" }),
+      });
+      const textarea = importForm.querySelector("textarea");
+      if (textarea) textarea.value = "";
+      alert(`Wallet import saved for ${payload.address}. Restart required: ${payload.restart_required ? "yes" : "no"}.`);
+    });
+  }
+}
+
 async function init() {
   const data = pageData();
   setActiveNav();
@@ -368,12 +666,14 @@ async function init() {
   }
 
   if (data.page === "capabilities") {
-    renderCapabilities(data.capabilities || [], "capabilities-table");
+    renderCapabilities(data.capabilities || [], "capabilities-table", true);
+    wireCapabilityControls();
     const refresh = document.getElementById("refresh-capabilities");
     if (refresh) {
       refresh.addEventListener("click", async () => {
         const payload = await postJSON("/manage/capabilities/refresh");
-        renderCapabilities(payload.capabilities || [], "capabilities-table");
+        renderCapabilities(payload.capabilities || [], "capabilities-table", true);
+        wireCapabilityControls();
       });
     }
   }
@@ -392,6 +692,16 @@ async function init() {
 
   if (data.page === "metrics") {
     renderMetrics(data.metrics || {}, data.series || []);
+  }
+
+  if (data.page === "prompt") {
+    renderPrompt(data.prompt || {});
+    wirePromptControls();
+  }
+
+  if (data.page === "wallet") {
+    renderWallet(data.wallet || {});
+    wireWalletControls();
   }
 }
 

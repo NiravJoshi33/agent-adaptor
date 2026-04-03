@@ -96,7 +96,7 @@ Contracts (ABC definitions — the stable center)
 | #   | Status | Feature                                                                                           | PRD Ref | Why it adds value                          |
 | --- | ------ | ------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------ |
 | 14  | Mostly done | **Dashboard — Overview page** — Wallet, balances, platforms, active jobs, earnings sparkline      | §15.3   | Visual demo > CLI-only demo at a hackathon |
-| 15  | Partial | **Dashboard — Capabilities page** — Pricing editor, enable/disable toggles                        | §15.3   | Shows provider sovereignty in action       |
+| 15  | Mostly done | **Dashboard — Capabilities page** — Pricing editor, enable/disable toggles                        | §15.3   | Inline controls landed; richer drift review UX can still improve |
 | 16  | Mostly done | **Dashboard — Agent page** — Decision log stream, tool call history, pause/resume                 | §15.3   | "Watch the agent think" is the wow factor  |
 | 17  | Done | **payment-escrow plugin** — `pay_escrow__prepare_lock`, `sign_and_submit`, `check_status` (consumes platform-supplied program payload at runtime) | §7.3 | On-chain escrow = strong OWS/Solana story |
 | 18  | Done | **Provider-customizable system prompt** — File-based override, `appendToDefault` mode             | §10.4   | Shows the "no-code strategy tuning" angle  |
@@ -118,8 +118,8 @@ Contracts (ABC definitions — the stable center)
 | 25  | Done | **MPP/Stripe adapter** — Fiat payment rails                                           | §7.4          | Nice for completeness, not hackathon-critical            |
 | 26  | Done | **Platform driver interface** — Plugin API for community drivers plus `drivers list/install/remove` CLI | §13.4         | Extensibility story is covered by wallet/payment/plugins and provider-facing driver lifecycle commands |
 | 27  | Done | **Optional tools** — SSE listener, heartbeat, webhook receiver, notifications, low-balance alerts | §12.5         | Operational polish                                       |
-| 28  | Pending | **Dashboard — Prompt editor** — History, diff view, test against examples             | §10.5         | UX polish                                                |
-| 29  | Partial | **Dashboard — Wallet page** — Tx history, export/import flows, faucet links           | §15.3         | Nice UX but CLI covers it                                |
+| 28  | Mostly done | **Dashboard — Prompt editor** — History, diff view, test against examples             | §10.5         | Live editing landed; history/diff/testing workflow remains |
+| 29  | Mostly done | **Dashboard — Wallet page** — Tx history, export/import flows, faucet links           | §15.3         | Page, export/import UI, and faucet links landed; history is runtime payment activity, not full chain indexer |
 | 30  | Done | **Plugin discovery** — site-packages scan via `pyproject.toml` entry points            | Impl notes §5 | Explicit config is enough initially                      |
 
 ---

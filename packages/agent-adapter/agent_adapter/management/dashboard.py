@@ -75,6 +75,20 @@ def _shell(title: str, body: str, page_data: dict | None = None) -> str:
               <small>Revenue, cost, performance</small>
             </span>
           </a>
+          <a href="/dashboard/prompt">
+            <span class="nav-index">06</span>
+            <span class="nav-copy">
+              <strong>Prompt</strong>
+              <small>Provider instructions, live policy</small>
+            </span>
+          </a>
+          <a href="/dashboard/wallet">
+            <span class="nav-index">07</span>
+            <span class="nav-copy">
+              <strong>Wallet</strong>
+              <small>Keys, balances, payment history</small>
+            </span>
+          </a>
         </nav>
         <div class="sidebar-footer">
           <div class="eyebrow">Local-First Control</div>
@@ -367,4 +381,108 @@ def mount_dashboard(app: FastAPI, runtime: RuntimeContext) -> None:
             "Metrics",
             body,
             {"page": "metrics", "metrics": metrics, "series": series},
+        )
+
+    @app.get("/dashboard/prompt", response_class=HTMLResponse, include_in_schema=False)
+    async def dashboard_prompt():
+        prompt = await runtime.get_prompt_settings()
+        body = """
+        <section class="hero compact">
+          <div class="hero-copy">
+            <div class="eyebrow">Provider Policy Surface</div>
+            <h2>Prompt</h2>
+            <p>Adjust the provider strategy layer live. Changes are persisted locally and hot-reloaded into the cached agent loop before the next run.</p>
+          </div>
+          <div class="hero-meta compact">
+            <div class="hero-callout">
+              <span class="label">Reload Model</span>
+              <strong>File-backed prompt editing with append or replace control.</strong>
+            </div>
+          </div>
+        </section>
+        <section class="grid metrics-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Prompt Controls</h3>
+            </div>
+            <div id="prompt-editor"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Effective Prompt</h3>
+            </div>
+            <div id="prompt-preview"></div>
+          </article>
+        </section>
+        """
+        return _shell(
+            "Prompt",
+            body,
+            {"page": "prompt", "prompt": prompt},
+        )
+
+    @app.get("/dashboard/wallet", response_class=HTMLResponse, include_in_schema=False)
+    async def dashboard_wallet():
+        wallet = await runtime.get_wallet_overview()
+        body = """
+        <section class="hero compact">
+          <div class="hero-copy">
+            <div class="eyebrow">Wallet Control Plane</div>
+            <h2>Wallet</h2>
+            <p>Inspect the signing identity, check operational liquidity, move keys deliberately, and keep recent payment activity close to the runtime.</p>
+          </div>
+          <div class="hero-meta compact">
+            <div class="hero-callout">
+              <span class="label">Key Safety</span>
+              <strong>Export is local-only. Import updates config and asks for a restart before the runtime switches identity.</strong>
+            </div>
+          </div>
+        </section>
+        <section class="grid cards metrics-cards">
+          <article class="card">
+            <span class="label">Address</span>
+            <strong id="wallet-address"></strong>
+            <p class="card-foot">Primary signing address used across capability execution and payment flows.</p>
+          </article>
+          <article class="card">
+            <span class="label">Balances</span>
+            <strong id="wallet-balances"></strong>
+            <p class="card-foot">Operational liquidity currently visible to the runtime.</p>
+          </article>
+          <article class="card">
+            <span class="label">Provider</span>
+            <strong id="wallet-provider"></strong>
+            <p class="card-foot">Current wallet plugin and cluster context.</p>
+          </article>
+          <article class="card">
+            <span class="label">Low Balance</span>
+            <strong id="wallet-alert"></strong>
+            <p class="card-foot">Threshold tracking used by runtime notifications and alerts.</p>
+          </article>
+        </section>
+        <section class="grid metrics-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Key Actions</h3>
+            </div>
+            <div id="wallet-actions"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Funding Links</h3>
+            </div>
+            <div id="wallet-faucets"></div>
+          </article>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h3>Payment Activity</h3>
+          </div>
+          <div id="wallet-activity"></div>
+        </section>
+        """
+        return _shell(
+            "Wallet",
+            body,
+            {"page": "wallet", "wallet": wallet},
         )

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import yaml
@@ -689,6 +689,10 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         ).json()
         self.assertEqual(added_platform["base_url"], "https://platform-api.example")
 
+        wallet = (await self.client.get("/manage/wallet")).json()
+        self.assertEqual(wallet["provider"], "dummy")
+        self.assertTrue(wallet["import_supported"])
+
     async def test_management_api_updates_prompt_and_rebuilds_agent_loop(self) -> None:
         prompt = (await self.client.get("/manage/agent/prompt")).json()
         self.assertTrue(prompt["append_to_default"])
@@ -855,6 +859,16 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operations_page.status_code, 200)
         self.assertIn("Runtime Operations", operations_page.text)
 
+        prompt_page = await self.client.get("/dashboard/prompt")
+        self.assertEqual(prompt_page.status_code, 200)
+        self.assertIn("Prompt Controls", prompt_page.text)
+        self.assertIn("&quot;page&quot;: &quot;prompt&quot;", prompt_page.text)
+
+        wallet_page = await self.client.get("/dashboard/wallet")
+        self.assertEqual(wallet_page.status_code, 200)
+        self.assertIn("Wallet Control Plane", wallet_page.text)
+        self.assertIn("&quot;page&quot;: &quot;wallet&quot;", wallet_page.text)
+
         self.spec_path.write_text(
             """
 openapi: 3.0.0
@@ -994,6 +1008,55 @@ paths:
             "drv_dummy__register",
             [tool.name for tool in agent._extra_tools],
         )
+
+    async def test_wallet_api_export_and_import_support_local_wallet_ops(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        first_keypair = Keypair()
+        second_keypair = Keypair()
+        _write_config(
+            self.config_path,
+            self.spec_path,
+            wallet_provider="solana-raw",
+            wallet_config={
+                "secret_key": str(first_keypair),
+                "rpc_url": "http://127.0.0.1:8899",
+                "cluster": "devnet",
+            },
+        )
+        self.runtime = await create_runtime(self.config_path)
+        self.runtime.wallet.get_balance = AsyncMock(return_value={"sol": 1.25, "usdc": 0.0})  # type: ignore[method-assign]
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
+            base_url="http://testserver",
+        )
+
+        wallet = (await self.client.get("/manage/wallet")).json()
+        self.assertEqual(wallet["address"], str(first_keypair.pubkey()))
+        self.assertTrue(wallet["export_supported"])
+        self.assertTrue(wallet["faucet_links"])
+
+        exported = (await self.client.post("/manage/wallet/export")).json()
+        self.assertEqual(exported["secret_key"], str(first_keypair))
+
+        imported = (
+            await self.client.put(
+                "/manage/wallet/import",
+                json={"secret_key": str(second_keypair)},
+            )
+        ).json()
+        self.assertEqual(imported["address"], str(second_keypair.pubkey()))
+        self.assertTrue(imported["restart_required"])
+
+        config = yaml.safe_load(self.config_path.read_text())
+        self.assertEqual(config["wallet"]["config"]["secret_key"], str(second_keypair))
 
     async def test_webhook_notifier_extension_receives_runtime_events(self) -> None:
         await self.client.aclose()

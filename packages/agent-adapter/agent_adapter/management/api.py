@@ -32,6 +32,10 @@ class PlatformAddRequest(BaseModel):
     driver: str = ""
 
 
+class WalletImportRequest(BaseModel):
+    secret_key: str
+
+
 def create_management_app(runtime: RuntimeContext) -> FastAPI:
     app = FastAPI(
         title="Agent Adapter Management API",
@@ -47,11 +51,22 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
 
     @app.get("/manage/wallet")
     async def get_wallet():
-        status = await runtime.whoami()
-        return {
-            "address": status["wallet"],
-            "balances": status["balances"],
-        }
+        return await runtime.get_wallet_overview()
+
+    @app.post("/manage/wallet/export")
+    async def export_wallet():
+        try:
+            return await runtime.export_wallet_secret()
+        except NotImplementedError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.put("/manage/wallet/import")
+    async def import_wallet(request: WalletImportRequest):
+        try:
+            result = await runtime.import_wallet_secret(request.secret_key)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {**result, "restart_required": True}
 
     @app.get("/manage/capabilities")
     async def list_capabilities():

@@ -563,6 +563,62 @@ class RuntimeContext:
             "recent_jobs": jobs,
         }
 
+    async def get_wallet_overview(self) -> dict[str, Any]:
+        status = await self.whoami()
+        wallet_cfg = self.config.get("wallet", {})
+        provider = str(wallet_cfg.get("provider", "unknown"))
+        provider_cfg = wallet_cfg.get("config", {}) or {}
+        recent_jobs = await self.list_jobs(12)
+        payment_activity = [
+            {
+                "id": job["id"],
+                "capability": job["capability"],
+                "platform": job["platform"] or "local runtime",
+                "status": job["status"],
+                "payment_protocol": job.get("payment_protocol") or "free",
+                "payment_amount": job.get("payment_amount") or 0.0,
+                "payment_currency": job.get("payment_currency") or "USDC",
+                "created_at": job.get("created_at"),
+                "completed_at": job.get("completed_at"),
+            }
+            for job in recent_jobs
+            if job.get("payment_protocol") or job.get("payment_amount")
+        ]
+
+        cluster = str(provider_cfg.get("cluster", ""))
+        chain = str(provider_cfg.get("chain", ""))
+        rpc_url = str(provider_cfg.get("rpc_url", ""))
+        faucet_links: list[dict[str, str]] = []
+        if provider == "solana-raw" and cluster == "devnet":
+            faucet_links.append(
+                {
+                    "label": "Solana Devnet Faucet",
+                    "url": "https://faucet.solana.com/",
+                }
+            )
+        if "EtWTRABZaYq6iMfeYKouRu166VU2xqa1" in chain:
+            faucet_links.append(
+                {
+                    "label": "OWS Solana Devnet Faucet",
+                    "url": "https://faucet.solana.com/",
+                }
+            )
+
+        return {
+            "address": status["wallet"],
+            "balances": status["balances"],
+            "low_balance": status.get("low_balance", {}),
+            "provider": provider,
+            "cluster": cluster,
+            "chain": chain,
+            "rpc_url": rpc_url,
+            "export_supported": provider == "solana-raw" or hasattr(self.wallet, "keypair"),
+            "import_supported": True,
+            "import_requires_restart": True,
+            "faucet_links": faucet_links,
+            "payment_activity": payment_activity,
+        }
+
     async def pause_agent(self) -> dict[str, Any]:
         self.agent_paused = True
         return {"status": "paused"}
