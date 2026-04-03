@@ -74,7 +74,7 @@ async def main() -> None:
     print("[2/8] Wallet (solana-raw) + Surfpool")
     from wallet_solana_raw import SolanaRawWallet
 
-    wallet = SolanaRawWallet.generate()
+    wallet = SolanaRawWallet.generate(rpc_url=SURFPOOL_RPC, cluster="devnet")
     address = await wallet.get_address()
     print(f"  Generated wallet: {address}")
 
@@ -84,10 +84,12 @@ async def main() -> None:
     # Airdrop 2 SOL
     pubkey = Pubkey.from_string(address)
     await airdrop_and_confirm(rpc, pubkey, 2_000_000_000)
-    balance_resp = await rpc.get_balance(pubkey)
-    balance_sol = balance_resp.value / 1e9
-    print(f"  Balance after airdrop: {balance_sol} SOL")
-    assert balance_sol >= 2.0, f"Expected >= 2 SOL, got {balance_sol}"
+
+    # Verify balance via wallet plugin (real RPC query)
+    balance = await wallet.get_balance()
+    print(f"  Balance after airdrop: {balance['sol']} SOL (via get_balance RPC)")
+    assert balance["sol"] >= 2.0, f"Expected >= 2 SOL, got {balance['sol']}"
+    balance_sol = balance["sol"]
 
     # Sign and send a real transaction
     recipient = Keypair()
@@ -126,10 +128,20 @@ async def main() -> None:
     print("[3/8] Wallet (OWS)")
     from wallet_ows import OWSWalletPlugin
 
-    ows_wallet = OWSWalletPlugin(wallet_name="integration-test")
+    ows_wallet = OWSWalletPlugin(
+        wallet_name="integration-test", rpc_url=SURFPOOL_RPC
+    )
     await ows_wallet.initialize()
     ows_address = await ows_wallet.get_address()
     print(f"  OWS wallet address: {ows_address}")
+
+    # Airdrop to OWS wallet and verify balance via RPC
+    ows_pubkey = Pubkey.from_string(ows_address)
+    await airdrop_and_confirm(rpc, ows_pubkey, 1_000_000_000)
+    ows_balance = await ows_wallet.get_balance()
+    print(f"  OWS balance: {ows_balance['sol']} SOL (via get_balance RPC)")
+    assert ows_balance["sol"] >= 1.0, f"Expected >= 1 SOL, got {ows_balance['sol']}"
+
     ows_sig = await ows_wallet.sign_message(b"integration test")
     assert len(ows_sig) == 64
     print(f"  OWS sign_message: {len(ows_sig)} bytes ✓")

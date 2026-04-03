@@ -582,12 +582,14 @@ source = { editable = "packages/plugins/wallet-ows" }
 dependencies = [
     { name = "agent-adapter-contracts" },
     { name = "open-wallet-standard" },
+    { name = "solana" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" },
     { name = "open-wallet-standard", specifier = ">=1.2" },
+    { name = "solana", specifier = ">=0.36" },
 ]
 
 [[package]]
