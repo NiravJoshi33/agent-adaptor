@@ -10,5 +10,8 @@ dependencies = [
     "solana>=0.36",
 ]
 
+[project.entry-points."agent_adapter.payments"]
+x402 = "payment_x402:X402Adapter"
+
 [tool.uv.sources]
 agent-adapter-contracts = { workspace = true }

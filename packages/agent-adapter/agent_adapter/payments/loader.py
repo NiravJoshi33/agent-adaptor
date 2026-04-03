@@ -6,6 +6,7 @@ from importlib import import_module
 from typing import Any
 
 from agent_adapter.payments.registry import PaymentRegistry
+from agent_adapter.plugins.discovery import discover_plugins
 
 _BUNDLED_PAYMENT_PLUGINS: dict[str, tuple[str, str]] = {
     "free": ("payment_free", "FreeAdapter"),
@@ -26,6 +27,7 @@ def load_payment_registry(
 ) -> PaymentRegistry:
     """Instantiate configured payment adapters and register them."""
     registry = PaymentRegistry()
+    discovered = discover_plugins("payment")
     for item in payment_configs or []:
         plugin_type = item.get("type") or item.get("provider") or item.get("id")
         if not plugin_type:
@@ -34,13 +36,17 @@ def load_payment_registry(
         module_name = item.get("module")
         class_name = item.get("class_name")
         if module_name is None or class_name is None:
-            try:
-                module_name, class_name = _BUNDLED_PAYMENT_PLUGINS[plugin_type]
-            except KeyError as exc:
-                raise ValueError(
-                    f"Unknown payment adapter '{plugin_type}'. "
-                    "Set module and class_name for external plugins."
-                ) from exc
+            if plugin_type in discovered:
+                spec = discovered[plugin_type]
+                module_name, class_name = spec.module, spec.attr
+            else:
+                try:
+                    module_name, class_name = _BUNDLED_PAYMENT_PLUGINS[plugin_type]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"Unknown payment adapter '{plugin_type}'. "
+                        "Set module and class_name for external plugins or install a matching entry-point plugin."
+                    ) from exc
 
         kwargs = dict(item.get("config", {}))
         if plugin_type == "x402" and "keypair" not in kwargs and hasattr(wallet, "keypair"):

@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+from agent_adapter.plugins.discovery import discover_plugins
 from agent_adapter_contracts.wallet import WalletPlugin
 
 
@@ -35,6 +36,14 @@ async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
             await plugin.initialize()
         return plugin
 
+    discovered = discover_plugins("wallet")
+    if provider in discovered:
+        spec = discovered[provider]
+        plugin = _load_class(spec.module, spec.attr)(**config)
+        if hasattr(plugin, "initialize"):
+            await plugin.initialize()
+        return plugin
+
     if provider == "ows":
         from wallet_ows import OWSWalletPlugin
 
@@ -59,5 +68,5 @@ async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
 
     raise ValueError(
         f'Wallet provider "{provider}" not found. '
-        f"Available: ows, solana-raw. Is the plugin installed?"
+        f"Available: {', '.join(sorted(set(['ows', 'solana-raw', *discovered.keys()]))) or 'none'}. Is the plugin installed?"
     )

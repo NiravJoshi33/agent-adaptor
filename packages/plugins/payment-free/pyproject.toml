@@ -7,5 +7,8 @@ dependencies = [
     "agent-adapter-contracts",
 ]
 
+[project.entry-points."agent_adapter.payments"]
+free = "payment_free:FreeAdapter"
+
 [tool.uv.sources]
 agent-adapter-contracts = { workspace = true }

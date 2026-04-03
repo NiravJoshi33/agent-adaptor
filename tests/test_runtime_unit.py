@@ -8,12 +8,14 @@ import tempfile
 import unittest
 import base64
 import httpx
+from unittest.mock import patch
 
 from agent_adapter.agent.loop import AgentLoop
 from agent_adapter.capabilities.mcp import MCP_PROTOCOL_VERSION, fetch_mcp_capabilities
 from agent_adapter.capabilities.openapi import parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.payments import load_payment_registry
+from agent_adapter.plugins.discovery import list_all_plugins
 from agent_adapter.store.database import Database
 from agent_adapter.store.encryption import WalletDerivedSecretsBackend
 from agent_adapter.store.secrets import SecretsStore
@@ -202,6 +204,29 @@ class FakeChat:
 class FakeOpenAIClient:
     def __init__(self, response: FakeAgentResponse) -> None:
         self.chat = FakeChat(response)
+
+
+class FakeEntryPoint:
+    def __init__(self, name: str, value: str) -> None:
+        self.name = name
+        self.value = value
+
+
+class FakeEntryPoints:
+    def __init__(self, mapping: dict[str, list[FakeEntryPoint]]) -> None:
+        self._mapping = mapping
+
+    def select(self, *, group: str):
+        return list(self._mapping.get(group, []))
+
+
+class DummyExtension:
+    def __init__(self, name: str = "ext") -> None:
+        self.name = name
+        self.initialized_with = None
+
+    async def initialize(self, runtime) -> None:
+        self.initialized_with = runtime
 
 
 class OpenAPIParsingTests(unittest.TestCase):
@@ -648,6 +673,27 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(
             registry.resolve(PaymentChallenge(type="escrow")).id, "solana_escrow"
         )
+
+    def test_plugin_discovery_lists_entry_point_plugins(self) -> None:
+        fake_eps = FakeEntryPoints(
+            {
+                "agent_adapter.wallets": [
+                    FakeEntryPoint("custom-wallet", "tests.dummy_plugins:DummyWalletPlugin")
+                ],
+                "agent_adapter.payments": [
+                    FakeEntryPoint("custom-pay", "payment_free:FreeAdapter")
+                ],
+                "agent_adapter.extensions": [
+                    FakeEntryPoint("custom-ext", "tests.test_runtime_unit:DummyExtension")
+                ],
+            }
+        )
+        with patch("agent_adapter.plugins.discovery.entry_points", return_value=fake_eps):
+            plugins = list_all_plugins()
+
+        self.assertEqual(plugins["wallet"][0]["id"], "custom-wallet")
+        self.assertEqual(plugins["payment"][0]["id"], "custom-pay")
+        self.assertEqual(plugins["extension"][0]["id"], "custom-ext")
 
 
 class EscrowAdapterTests(unittest.IsolatedAsyncioTestCase):

@@ -12,6 +12,7 @@ import uvicorn
 import yaml
 
 from agent_adapter.management import create_management_app
+from agent_adapter.plugins.discovery import list_all_plugins
 from agent_adapter.runtime import create_runtime
 
 
@@ -69,6 +70,10 @@ def _parser() -> argparse.ArgumentParser:
     metrics_summary.add_argument("--days", type=int, default=30)
     metrics_daily = metrics_sub.add_parser("daily")
     metrics_daily.add_argument("--days", type=int, default=14)
+
+    plugins = sub.add_parser("plugins")
+    plugins_sub = plugins.add_subparsers(dest="plugins_command", required=True)
+    plugins_sub.add_parser("list")
 
     caps = sub.add_parser("capabilities")
     caps_sub = caps.add_subparsers(dest="caps_command", required=True)
@@ -233,6 +238,12 @@ async def _run_metrics_command(args: argparse.Namespace) -> Any:
         await runtime.close()
 
 
+def _run_plugins_command(args: argparse.Namespace) -> Any:
+    if args.plugins_command == "list":
+        return list_all_plugins()
+    raise ValueError(f"Unknown plugins command: {args.plugins_command}")
+
+
 async def _run_start(args: argparse.Namespace) -> None:
     runtime = await create_runtime(args.config)
     app = create_management_app(runtime)
@@ -291,6 +302,9 @@ def app(argv: list[str] | None = None) -> None:
         return
     if args.command == "metrics":
         _print(asyncio.run(_run_metrics_command(args)))
+        return
+    if args.command == "plugins":
+        _print(_run_plugins_command(args))
         return
     if args.command == "start":
         try:

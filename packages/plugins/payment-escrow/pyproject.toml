@@ -7,5 +7,9 @@ dependencies = [
     "agent-adapter-contracts",
 ]
 
+[project.entry-points."agent_adapter.payments"]
+escrow = "payment_escrow:EscrowAdapter"
+solana_escrow = "payment_escrow:EscrowAdapter"
+
 [tool.uv.sources]
 agent-adapter-contracts = { workspace = true }

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import yaml
@@ -16,6 +17,10 @@ import yaml
 from agent_adapter import cli
 from agent_adapter.management import create_management_app
 from agent_adapter.runtime import create_runtime
+from agent_adapter.extensions import load_extensions
+from agent_adapter.payments import load_payment_registry
+from agent_adapter.wallet.loader import load_wallet
+from tests.dummy_plugins import DummyWalletPlugin
 
 
 def _write_openapi_spec(path: Path) -> None:
@@ -258,6 +263,50 @@ class CLITests(unittest.TestCase):
             self.assertEqual(len(series), 7)
             self.assertTrue(any(point["revenue"] == 0.75 for point in series))
 
+    def test_cli_plugins_list_shows_discovered_entry_points(self) -> None:
+        class FakeEntryPoint:
+            def __init__(self, name: str, value: str) -> None:
+                self.name = name
+                self.value = value
+
+        class FakeEntryPoints:
+            def __init__(self, mapping):
+                self.mapping = mapping
+
+            def select(self, *, group: str):
+                return list(self.mapping.get(group, []))
+
+        fake_eps = FakeEntryPoints(
+            {
+                "agent_adapter.wallets": [
+                    FakeEntryPoint("custom-wallet", "tests.dummy_plugins:DummyWalletPlugin")
+                ],
+                "agent_adapter.payments": [
+                    FakeEntryPoint("custom-pay", "payment_free:FreeAdapter")
+                ],
+                "agent_adapter.extensions": [
+                    FakeEntryPoint("custom-ext", "tests.test_management_surface:TestExtension")
+                ],
+            }
+        )
+
+        stdout = io.StringIO()
+        with patch("agent_adapter.plugins.discovery.entry_points", return_value=fake_eps):
+            with redirect_stdout(stdout):
+                cli.app(["plugins", "list"])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["wallet"][0]["id"], "custom-wallet")
+        self.assertEqual(payload["payment"][0]["id"], "custom-pay")
+        self.assertEqual(payload["extension"][0]["id"], "custom-ext")
+
+
+class TestExtension:
+    def __init__(self) -> None:
+        self.runtime = None
+
+    async def initialize(self, runtime) -> None:
+        self.runtime = runtime
+
 
 class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -479,3 +528,46 @@ paths:
         by_name = {cap["name"]: cap for cap in refreshed["capabilities"]}
         self.assertEqual(by_name["get_report"]["drift_status"], "stale")
         self.assertEqual(by_name["get_report"]["status"], "stale")
+
+    async def test_loaders_can_resolve_entry_point_plugins(self) -> None:
+        class FakeEntryPoint:
+            def __init__(self, name: str, value: str) -> None:
+                self.name = name
+                self.value = value
+
+        class FakeEntryPoints:
+            def __init__(self, mapping):
+                self.mapping = mapping
+
+            def select(self, *, group: str):
+                return list(self.mapping.get(group, []))
+
+        fake_eps = FakeEntryPoints(
+            {
+                "agent_adapter.wallets": [
+                    FakeEntryPoint("dummy-entry", "tests.dummy_plugins:DummyWalletPlugin")
+                ],
+                "agent_adapter.payments": [
+                    FakeEntryPoint("free-entry", "payment_free:FreeAdapter")
+                ],
+                "agent_adapter.extensions": [
+                    FakeEntryPoint("test-ext", "tests.test_management_surface:TestExtension")
+                ],
+            }
+        )
+
+        with patch("agent_adapter.plugins.discovery.entry_points", return_value=fake_eps):
+            wallet = await load_wallet(
+                "dummy-entry",
+                {"address": "entry-wallet", "sol": 2.0, "usdc": 4.5},
+            )
+            self.assertIsInstance(wallet, DummyWalletPlugin)
+            self.assertEqual(await wallet.get_address(), "entry-wallet")
+
+            payments = load_payment_registry([{"type": "free-entry"}])
+            self.assertEqual(payments.list(), ["free"])
+
+            extensions = await load_extensions([{"id": "test-ext"}], runtime=self.runtime)
+            self.assertEqual(len(extensions._extensions), 1)
+            self.assertIsInstance(extensions._extensions[0], TestExtension)
+            self.assertIs(extensions._extensions[0].runtime, self.runtime)
