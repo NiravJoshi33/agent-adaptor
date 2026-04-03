@@ -112,11 +112,10 @@ async def main() -> None:
     from agent_adapter.store.secrets import SecretsStore
     from agent_adapter.store.state import StateStore
     from agent_adapter.wallet.loader import load_wallet
-    from agent_adapter.payments.registry import PaymentRegistry
+    from agent_adapter.payments import load_payment_registry
     from agent_adapter.jobs.engine import JobEngine
     from agent_adapter.tools.handlers import ToolHandlers
     from agent_adapter.agent.loop import AgentLoop
-    from payment_free import FreeAdapter
 
     config = load_config("simulation/demo_real_api.yaml")
 
@@ -155,8 +154,7 @@ async def main() -> None:
         logger.info(f"  {c.name}: ${c.pricing.amount}/call — {c.base_url}{c.source_ref.split(' ', 1)[-1]}")
 
     # Payments
-    pay_registry = PaymentRegistry()
-    pay_registry.register(FreeAdapter())
+    pay_registry = load_payment_registry(config.get("payments"), wallet=wallet)
 
     # Job engine
     job_engine = JobEngine(db)
@@ -193,7 +191,14 @@ async def main() -> None:
             "agent_status": "running",
         }
 
-    handlers = ToolHandlers(wallet, secrets, state, whoami_fn=whoami)
+    handlers = ToolHandlers(
+        wallet,
+        secrets,
+        state,
+        whoami_fn=whoami,
+        capability_registry=registry,
+        job_engine=job_engine,
+    )
 
     cap_summary = "\n".join(
         f"- {c['name']}: {c['description']} ({c['pricing']})\n"
@@ -213,8 +218,7 @@ async def main() -> None:
 {cap_summary}
 
 ## How to execute capabilities
-Use net__http_request to call the endpoint directly. For path parameters like {{countryCode}},
-substitute the actual value in the URL. For query parameters, pass them in the params dict.
+Use the matching cap__* tool for API execution. The runtime will build the HTTP request for you.
 
 Examples:
 - Holidays: GET https://date.nager.at/api/v3/NextPublicHolidays/JP
@@ -226,17 +230,18 @@ TaskNet is at {platform_url}.
 2. Register with wallet-signed challenge
 3. GET /tasks?status=open to find work
 4. POST /tasks/{{id}}/bid to bid
-5. Execute the capability via net__http_request to the real API
+5. Execute the capability via the matching cap__* tool
 6. POST /tasks/{{id}}/deliver with the output
 
 ## Rules
 1. Start with status__whoami
 2. Store API keys immediately with secrets__store
 3. Match tasks to your capabilities by required_capability field
-4. Execute capabilities by calling the REAL API endpoints listed above
+4. Execute capabilities using the matching cap__* tool
 5. Deliver the actual API response data to the platform
 """,
         max_tool_rounds=25,
+        extra_tools=registry.to_tool_definitions(),
     )
 
     logger.info("Agent starting autonomous loop...")

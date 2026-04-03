@@ -9,7 +9,9 @@ from __future__ import annotations
 from solana.rpc.async_api import AsyncClient as SolanaClient
 from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
+from solders.message import to_bytes_versioned
 from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
 
 from agent_adapter_contracts.wallet import WalletPlugin
 
@@ -98,5 +100,18 @@ class SolanaRawWallet(WalletPlugin):
         return bytes(sig)
 
     async def sign_transaction(self, tx: bytes) -> bytes:
-        sig = self._keypair.sign_message(tx)
-        return bytes(sig)
+        versioned = VersionedTransaction.from_bytes(tx)
+        msg = versioned.message
+        signable = to_bytes_versioned(msg)
+        signatures = list(versioned.signatures)
+        account_keys = list(msg.account_keys)
+        signer_limit = msg.header.num_required_signatures
+
+        for index, key in enumerate(account_keys[:signer_limit]):
+            if key == self._keypair.pubkey():
+                signatures[index] = self._keypair.sign_message(signable)
+                break
+        else:
+            raise ValueError("Wallet public key is not a required signer for this tx")
+
+        return bytes(VersionedTransaction.populate(msg, signatures))

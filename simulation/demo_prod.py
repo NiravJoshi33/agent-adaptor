@@ -165,13 +165,14 @@ async def main() -> None:
     from agent_adapter.store.encryption import WalletDerivedSecretsBackend
     from agent_adapter.store.secrets import SecretsStore
     from agent_adapter.store.state import StateStore
-    from agent_adapter.payments.registry import PaymentRegistry
+    from agent_adapter.capabilities.openapi import fetch_and_parse
+    from agent_adapter.capabilities.registry import CapabilityRegistry
+    from agent_adapter.payments import load_payment_registry
     from agent_adapter.jobs.engine import JobEngine
     from agent_adapter.tools.handlers import ToolHandlers
     from agent_adapter.agent.loop import AgentLoop
     from agent_adapter.extensions.registry import ExtensionRegistry
-    from payment_free import FreeAdapter
-    from payment_x402 import X402Adapter
+    from agent_adapter_contracts.types import PricingConfig
     from payment_x402.http_client import X402HttpClient
     from wallet_solana_raw import SolanaRawWallet
 
@@ -195,6 +196,26 @@ async def main() -> None:
     agent_usdc = await get_usdc_balance(Pubkey.from_string(address), usdc_mint)
     logger.info(f"Agent balance: 5.0 SOL, {agent_usdc} USDC")
 
+    platform_url = "http://127.0.0.1:8002"
+    provider_url = "http://127.0.0.1:8001"
+
+    registry = CapabilityRegistry()
+    caps, spec_hash = await fetch_and_parse(f"{provider_url}/openapi.json")
+    for cap in caps:
+        registry.register(cap)
+    logger.info(f"Discovered {len(caps)} provider capabilities (hash={spec_hash})")
+
+    for name, amount in {
+        "get_current_weather": 0.01,
+        "get_weather_forecast": 0.02,
+        "get_next_holidays": 0.005,
+        "get_country_info": 0.003,
+    }.items():
+        cap = registry.get(name)
+        if cap:
+            cap.enabled = True
+            cap.pricing = PricingConfig(model="per_call", amount=amount)
+
     # Secrets + State
     backend = WalletDerivedSecretsBackend(wallet.secret_bytes)
     secrets = SecretsStore(db, backend)
@@ -207,21 +228,19 @@ async def main() -> None:
     job_engine = JobEngine(db, extensions)
 
     # Payment adapters
-    pay_registry = PaymentRegistry()
-    pay_registry.register(FreeAdapter())
-
-    # x402 adapter — with the wallet's keypair for signing payments
-    x402_adapter = X402Adapter(keypair=wallet.keypair, rpc_url=RPC_URL)
-    pay_registry.register(x402_adapter)
+    pay_registry = load_payment_registry(
+        [
+            {"type": "free"},
+            {"type": "x402", "config": {"rpc_url": RPC_URL}},
+        ],
+        wallet=wallet,
+    )
     logger.info(f"Payment adapters: {pay_registry.list()}")
 
     # x402 HTTP client — wraps httpx with automatic 402 handling
     x402_http = X402HttpClient(keypair=wallet.keypair, rpc_url=RPC_URL)
 
     # ── 3. Requester posts tasks ───────────────────────────────────
-    platform_url = "http://127.0.0.1:8002"
-    provider_url = "http://127.0.0.1:8001"
-
     logger.info("Requester posting tasks...")
     posted_tasks = await post_tasks(platform_url)
     for t in posted_tasks:
@@ -240,9 +259,12 @@ async def main() -> None:
             "usdc_balance": usdc_bal,
             "registered_platforms": [],
             "capabilities": [
-                {"name": "get_current_weather", "endpoint": f"{provider_url}/weather/current", "price": "0.01 SOL (x402)"},
-                {"name": "get_next_holidays", "endpoint": f"{provider_url}/holidays/next/{{country_code}}", "price": "0.005 SOL (x402)"},
-                {"name": "get_country_info", "endpoint": f"{provider_url}/holidays/country/{{country_code}}", "price": "0.003 SOL (x402)"},
+                {
+                    "name": c.name,
+                    "endpoint": f"{c.base_url}{c.execution.get('path', '')}",
+                    "price": f"{c.pricing.amount} USDC",
+                }
+                for c in registry.list_priced()
             ],
             "active_jobs": len(active),
             "earnings_today": earnings,
@@ -258,6 +280,7 @@ async def main() -> None:
         job_engine=job_engine,
         whoami_fn=whoami,
         x402_http_client=x402_http,
+        capability_registry=registry,
     )
 
     agent = AgentLoop(
@@ -276,23 +299,24 @@ async def main() -> None:
 7. Store registration with state__set (namespace="platforms", key="tasknet", data with agent_id)
 8. GET {platform_url}/tasks?status=open with X-API-Key header to find tasks
 9. For EACH open task: POST /tasks/{{task_id}}/bid with a price within budget
-10. For EACH accepted task: Execute the capability by calling the provider API
+10. For EACH accepted task: Execute the matching cap__* tool
 11. For EACH completed task: POST /tasks/{{task_id}}/deliver with output containing the API response
 
-## Your capabilities (provider API endpoints)
-- get_current_weather: GET {provider_url}/weather/current?location=<city>
-- get_next_holidays: GET {provider_url}/holidays/next/<country_code>
-- get_country_info: GET {provider_url}/holidays/country/<country_code>
+## Your capabilities
+- cap__get_current_weather: current weather by location
+- cap__get_weather_forecast: forecast by location
+- cap__get_next_holidays: next public holidays by country_code
+- cap__get_country_info: country holiday metadata by country_code
 
 ## x402 payment (IMPORTANT)
-The provider API uses x402 payment. Your HTTP client handles this AUTOMATICALLY.
-Just make normal GET requests. The 402 → payment → retry flow is transparent.
-You have USDC in your wallet. Do NOT worry about payment — just call the endpoints.
+The provider API uses x402 payment. Capability execution handles 402 → payment → retry
+automatically through the runtime's HTTP client. You have USDC in your wallet.
 
 ## Delivery format
 POST /tasks/{{task_id}}/deliver with JSON body: {{"output": <the API response data>}}
 """,
         max_tool_rounds=25,
+        extra_tools=registry.to_tool_definitions(),
     )
 
     logger.info("Agent starting autonomous loop...")
@@ -358,7 +382,6 @@ POST /tasks/{{task_id}}/deliver with JSON body: {{"output": <the API response da
 
     # ── Cleanup ────────────────────────────────────────────────────
     await handlers.close()
-    await x402_http.aclose()
     await db.close()
     provider_task.cancel()
     platform_task.cancel()

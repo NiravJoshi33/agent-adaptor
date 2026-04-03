@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any
 
 from agent_adapter_contracts.wallet import WalletPlugin
+
+
+def _load_class(module_name: str, class_name: str) -> type:
+    module = import_module(module_name)
+    return getattr(module, class_name)
 
 
 async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
@@ -15,6 +21,19 @@ async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
         config: Provider-specific config dict from agent-adapter.yaml.
     """
     rpc_url = config.get("rpc_url", "http://127.0.0.1:8899")
+
+    if "module" in config:
+        module_name = config["module"]
+        class_name = config.get("class_name", "WalletPlugin")
+        kwargs = {
+            k: v
+            for k, v in config.items()
+            if k not in {"module", "class_name"}
+        }
+        plugin = _load_class(module_name, class_name)(**kwargs)
+        if hasattr(plugin, "initialize"):
+            await plugin.initialize()
+        return plugin
 
     if provider == "ows":
         from wallet_ows import OWSWalletPlugin

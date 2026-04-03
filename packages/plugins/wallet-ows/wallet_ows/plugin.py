@@ -137,4 +137,12 @@ class OWSWalletPlugin(WalletPlugin):
             passphrase=self._passphrase,
             vault_path_opt=self._vault_path,
         )
-        return bytes.fromhex(result["signature"])
+        for key in ("signed_transaction", "transaction", "signedTx"):
+            value = result.get(key)
+            if value:
+                return bytes.fromhex(value)
+        if "signature" in result:
+            raise RuntimeError(
+                "OWS sign_transaction returned only a signature, not signed transaction bytes"
+            )
+        raise RuntimeError("OWS sign_transaction returned an unexpected payload")

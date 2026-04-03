@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 
 from agent_adapter.tools.definitions import build_tool_list
 from agent_adapter.tools.handlers import ToolHandlers
+from agent_adapter_contracts.types import ToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,13 @@ class AgentLoop:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         custom_prompt: str = "",
         max_tool_rounds: int = 20,
+        extra_tools: list[ToolDefinition] | None = None,
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         self._handlers = handlers
         self._max_tool_rounds = max_tool_rounds
+        self._extra_tools = extra_tools or []
 
         prompt = system_prompt
         if custom_prompt:
@@ -68,7 +71,7 @@ class AgentLoop:
 
         Returns the agent's final text response.
         """
-        tools = build_tool_list()
+        tools = build_tool_list(extra_tools=self._extra_tools)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": user_message},

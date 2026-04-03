@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 from typing import Any
 
 import httpx
@@ -62,6 +63,57 @@ def _extract_input_schema(operation: dict, spec: dict) -> dict:
     return schema
 
 
+def _merge_parameters(
+    path_item: dict[str, Any], operation: dict[str, Any], spec: dict
+) -> list[dict[str, Any]]:
+    """Merge path-level and operation-level parameters per OpenAPI rules."""
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in path_item.get("parameters", []) + operation.get("parameters", []):
+        param = _resolve_schema(raw, spec) if "$ref" in raw else raw
+        merged[(param["name"], param.get("in", "query"))] = param
+    return list(merged.values())
+
+
+def _extract_request_body(operation: dict[str, Any], spec: dict) -> dict[str, Any]:
+    """Resolve requestBody metadata for execution planning."""
+    body = operation.get("requestBody", {})
+    if "$ref" in body:
+        body = _resolve_ref(body["$ref"], spec)
+    return body
+
+
+def _build_execution_plan(
+    method: str,
+    path: str,
+    params: list[dict[str, Any]],
+    request_body: dict[str, Any],
+    spec: dict,
+) -> dict[str, Any]:
+    """Create enough execution metadata for cap__* HTTP tool handlers."""
+    json_body = request_body.get("content", {}).get("application/json", {})
+    body_schema = _resolve_schema(json_body.get("schema"), spec)
+
+    plan: dict[str, Any] = {
+        "type": "http",
+        "method": method.upper(),
+        "path": path,
+        "path_params": [],
+        "query_params": [],
+        "header_params": [],
+        "cookie_params": [],
+        "body_schema": body_schema,
+        "body_required": bool(request_body.get("required", False)),
+    }
+
+    for param in params:
+        loc = param.get("in", "query")
+        key = f"{loc}_params"
+        if key in plan:
+            plan[key].append(param["name"])
+
+    return plan
+
+
 def _extract_output_schema(operation: dict, spec: dict) -> dict:
     """Extract response schema from the 200/201 response."""
     responses = operation.get("responses", {})
@@ -96,6 +148,12 @@ def parse_openapi_spec(
             if operation is None:
                 continue
 
+            params = _merge_parameters(path_item, operation, spec)
+            op_for_schema = deepcopy(operation)
+            op_for_schema["parameters"] = params
+            request_body = _extract_request_body(operation, spec)
+            op_for_schema["requestBody"] = request_body
+
             op_id = operation.get("operationId", f"{method}_{path}".replace("/", "_"))
             name = op_id.replace("-", "_").strip("_")
 
@@ -106,8 +164,11 @@ def parse_openapi_spec(
                     source_ref=f"{method.upper()} {path}",
                     description=operation.get("summary")
                     or operation.get("description", ""),
-                    input_schema=_extract_input_schema(operation, spec),
+                    input_schema=_extract_input_schema(op_for_schema, spec),
                     output_schema=_extract_output_schema(operation, spec),
+                    execution=_build_execution_plan(
+                        method, path, params, request_body, spec
+                    ),
                     base_url=base_url,
                     enabled=False,
                 )

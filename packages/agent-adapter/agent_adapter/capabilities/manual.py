@@ -31,10 +31,12 @@ def parse_manual_definitions(definitions: list[dict[str, Any]]) -> list[Capabili
             Capability(
                 name=defn["name"],
                 source="manual",
-                source_ref=defn["name"],
+                source_ref=defn.get("sourceRef", defn.get("name", "")),
                 description=defn.get("description", ""),
                 input_schema=defn.get("inputSchema", defn.get("input_schema", {})),
                 output_schema=defn.get("outputSchema", defn.get("output_schema", {})),
+                execution=defn.get("execution", {}),
+                base_url=defn.get("baseUrl", defn.get("base_url", "")),
                 enabled=False,
             )
         )

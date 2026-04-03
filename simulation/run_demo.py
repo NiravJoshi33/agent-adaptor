@@ -108,11 +108,10 @@ async def main() -> None:
     from agent_adapter.store.secrets import SecretsStore
     from agent_adapter.store.state import StateStore
     from agent_adapter.wallet.loader import load_wallet
-    from agent_adapter.payments.registry import PaymentRegistry
+    from agent_adapter.payments import load_payment_registry
     from agent_adapter.jobs.engine import JobEngine
     from agent_adapter.tools.handlers import ToolHandlers
     from agent_adapter.agent.loop import AgentLoop
-    from payment_free import FreeAdapter
 
     config = load_config("simulation/agent-adapter.yaml")
 
@@ -154,8 +153,7 @@ async def main() -> None:
     logger.info(f"Enabled + priced: {[c.name for c in priced]}")
 
     # Payments
-    pay_registry = PaymentRegistry()
-    pay_registry.register(FreeAdapter())
+    pay_registry = load_payment_registry(config.get("payments"), wallet=wallet)
 
     # Job engine
     job_engine = JobEngine(db)
@@ -188,7 +186,14 @@ async def main() -> None:
             "agent_status": "running",
         }
 
-    handlers = ToolHandlers(wallet, secrets, state, whoami_fn=whoami)
+    handlers = ToolHandlers(
+        wallet,
+        secrets,
+        state,
+        whoami_fn=whoami,
+        capability_registry=registry,
+        job_engine=job_engine,
+    )
     agent_cfg = config["agent"]
 
     agent = AgentLoop(
@@ -217,10 +222,11 @@ TaskNet is a task marketplace at {platform_url}. To participate:
 3. Store the API key immediately with secrets__store
 4. Find open tasks matching your capabilities
 5. Bid at or below your configured price
-6. Execute the capability by making HTTP requests to your provider API
+6. Execute capabilities using the matching cap__* tool
 7. Deliver the results back to the platform
 """,
         max_tool_rounds=20,
+        extra_tools=registry.to_tool_definitions(),
     )
 
     logger.info("Agent starting autonomous loop...")

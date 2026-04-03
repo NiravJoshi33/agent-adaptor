@@ -283,12 +283,19 @@ async def main() -> None:
                 "agent_status": "running",
             }
 
-        handlers = ToolHandlers(wallet, secrets, state, whoami_fn=whoami)
+        handlers = ToolHandlers(
+            wallet,
+            secrets,
+            state,
+            whoami_fn=whoami,
+            capability_registry=registry,
+        )
         agent = AgentLoop(
             api_key=api_key,
             model="openai/gpt-oss-120b",
             handlers=handlers,
             max_tool_rounds=3,
+            extra_tools=registry.to_tool_definitions(),
         )
         result = await agent.run_once(
             "Check your status and report your wallet address and balance."

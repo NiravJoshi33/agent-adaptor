@@ -10,6 +10,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from openai import pydantic_function_tool
 
+from agent_adapter_contracts.types import ToolDefinition
+
 
 # ── Status tools ───────────────────────────────────────────────────────
 
@@ -112,6 +114,14 @@ class wallet__sign_message(BaseModel):
     message: str = Field(description="Message to sign")
 
 
+class wallet__sign_transaction(BaseModel):
+    """Sign serialized transaction bytes and return the signed transaction as hex."""
+
+    transaction: str = Field(
+        description="Hex-encoded serialized transaction bytes to sign"
+    )
+
+
 # ── All core tool models ──────────────────────────────────────────────
 
 CORE_TOOL_MODELS: list[type[BaseModel]] = [
@@ -127,12 +137,27 @@ CORE_TOOL_MODELS: list[type[BaseModel]] = [
     wallet__get_address,
     wallet__get_balance,
     wallet__sign_message,
+    wallet__sign_transaction,
 ]
 
 
 def build_tool_list(
     extra_models: list[type[BaseModel]] | None = None,
+    extra_tools: list[ToolDefinition] | None = None,
 ) -> list[dict]:
     """Build the OpenAI-compatible tools list from all registered tool models."""
     models = CORE_TOOL_MODELS + (extra_models or [])
-    return [pydantic_function_tool(m) for m in models]
+    tools = [pydantic_function_tool(m) for m in models]
+    for tool in extra_tools or []:
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema
+                    or {"type": "object", "properties": {}},
+                },
+            }
+        )
+    return tools

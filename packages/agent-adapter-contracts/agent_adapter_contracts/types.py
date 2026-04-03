@@ -14,6 +14,7 @@ class Capability:
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
+    execution: dict[str, Any] = field(default_factory=dict)
     base_url: str = ""
     enabled: bool = False
     pricing: PricingConfig | None = None
