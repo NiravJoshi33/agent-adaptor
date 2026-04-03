@@ -4,6 +4,8 @@ Turn any API or MCP server into a self-hosted economic agent.
 
 Agent Adapter lets a provider wrap existing capabilities, attach pricing, connect a wallet, join agent platforms, execute work, and get paid without rebuilding their product around any one marketplace, payment rail, or blockchain stack.
 
+This project is currently in **early alpha**. The core runtime works, the main architecture is in place, and there is meaningful test coverage, but the system is still evolving and some integrations are only validated locally or against sandbox/demo environments.
+
 Built for the Open Wallet Foundation hackathon, this repo focuses on a practical provider runtime:
 
 - discover capabilities from OpenAPI and MCP
