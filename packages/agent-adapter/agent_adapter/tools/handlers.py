@@ -588,7 +588,7 @@ class ToolHandlers:
             job_id = await self._job_engine.create(
                 capability=capability.name,
                 input_data=args,
-                payment_protocol="free",
+                payment_protocol="x402" if self._x402_http_client else "free",
                 payment_amount=self._estimate_payment_amount(capability, args),
                 payment_currency=capability.pricing.currency,
             )
@@ -646,7 +646,7 @@ class ToolHandlers:
             job_id = await self._job_engine.create(
                 capability=capability.name,
                 input_data=args,
-                payment_protocol="x402" if self._x402_http_client else "free",
+                payment_protocol="free",
                 payment_amount=self._estimate_payment_amount(capability, args),
                 payment_currency=capability.pricing.currency,
             )

@@ -40,6 +40,7 @@ from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
 from agent_adapter.tools.handlers import ToolHandlers
 from agent_adapter.wallet.loader import load_wallet
+from agent_adapter.wallet.persistence import persist_wallet_keypair
 from agent_adapter_contracts.extensions import RuntimeEvent
 from agent_adapter_contracts.types import Capability, PricingConfig
 
@@ -865,13 +866,19 @@ class RuntimeContext:
         from solders.keypair import Keypair
 
         keypair = Keypair.from_base58_string(secret_key.strip())
+        wallet_encryption_key = _wallet_encryption_key(self.config)
+        if not wallet_encryption_key:
+            raise ValueError(
+                "Wallet import requires adapter.walletEncryptionKey "
+                "or AGENT_ADAPTER_WALLET_ENCRYPTION_KEY."
+            )
+        await persist_wallet_keypair(self.db, wallet_encryption_key, keypair)
         current_cfg = dict(self.config.get("wallet", {}).get("config", {}))
         next_cfg = {
             key: value
             for key, value in current_cfg.items()
             if key in {"rpc_url", "cluster"}
         }
-        next_cfg["secret_key"] = secret_key.strip()
         update_wallet_config(
             self.config_path,
             provider="solana-raw",

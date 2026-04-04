@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -23,6 +24,9 @@ from agent_adapter.extensions import load_extensions
 from agent_adapter.payments import load_payment_registry
 from agent_adapter.wallet.loader import load_wallet
 from tests.dummy_plugins import DummyWalletPlugin
+
+sys.modules.setdefault("test_management_surface", sys.modules[__name__])
+sys.modules.setdefault("tests.test_management_surface", sys.modules[__name__])
 
 
 def _write_openapi_spec(path: Path) -> None:
@@ -355,7 +359,10 @@ class CLITests(unittest.TestCase):
             import_path = root / "import.txt"
             import_path.write_text(str(second_keypair))
             stdout = io.StringIO()
-            with redirect_stdout(stdout):
+            with patch.dict(
+                os.environ,
+                {"AGENT_ADAPTER_WALLET_ENCRYPTION_KEY": "test-wallet-master-key"},
+            ), redirect_stdout(stdout):
                 cli.app(
                     [
                         "--config",
@@ -370,91 +377,95 @@ class CLITests(unittest.TestCase):
 
             config = yaml.safe_load(config_path.read_text())
             self.assertEqual(config["wallet"]["provider"], "solana-raw")
-            self.assertEqual(config["wallet"]["config"]["secret_key"], str(second_keypair))
+            self.assertNotIn("secret_key", config["wallet"]["config"])
 
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                cli.app(
-                    [
-                        "--config",
-                        str(config_path),
-                        "platforms",
-                        "add",
-                        "https://tasknet.example",
-                        "--name",
-                        "TaskNet",
-                    ]
-                )
-            platform = json.loads(stdout.getvalue())
-            self.assertEqual(platform["base_url"], "https://tasknet.example")
-            self.assertEqual(platform["platform_name"], "TaskNet")
-
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                cli.app(["--config", str(config_path), "platforms", "list"])
-            listed = json.loads(stdout.getvalue())
-            self.assertEqual(listed["platforms"][0]["base_url"], "https://tasknet.example")
-
-            async def seed_runtime() -> None:
-                runtime = await create_runtime(config_path)
-                try:
-                    job_id = await runtime.job_engine.create(
-                        capability="get_report",
-                        input_data={"report_id": "csv"},
-                        payment_protocol="x402",
-                        payment_amount=1.25,
+            with patch.dict(
+                os.environ,
+                {"AGENT_ADAPTER_WALLET_ENCRYPTION_KEY": "test-wallet-master-key"},
+            ):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    cli.app(
+                        [
+                            "--config",
+                            str(config_path),
+                            "platforms",
+                            "add",
+                            "https://tasknet.example",
+                            "--name",
+                            "TaskNet",
+                        ]
                     )
-                    await runtime.job_engine.mark_executing(job_id)
-                    await runtime.job_engine.mark_completed(job_id, output_hash="ok")
-                    await runtime.record_llm_usage(
-                        {
-                            "model": "openai/gpt-oss-120b",
-                            "prompt_tokens": 600,
-                            "completion_tokens": 200,
-                            "total_tokens": 800,
-                        }
+                platform = json.loads(stdout.getvalue())
+                self.assertEqual(platform["base_url"], "https://tasknet.example")
+                self.assertEqual(platform["platform_name"], "TaskNet")
+
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    cli.app(["--config", str(config_path), "platforms", "list"])
+                listed = json.loads(stdout.getvalue())
+                self.assertEqual(listed["platforms"][0]["base_url"], "https://tasknet.example")
+
+                async def seed_runtime() -> None:
+                    runtime = await create_runtime(config_path)
+                    try:
+                        job_id = await runtime.job_engine.create(
+                            capability="get_report",
+                            input_data={"report_id": "csv"},
+                            payment_protocol="x402",
+                            payment_amount=1.25,
+                        )
+                        await runtime.job_engine.mark_executing(job_id)
+                        await runtime.job_engine.mark_completed(job_id, output_hash="ok")
+                        await runtime.record_llm_usage(
+                            {
+                                "model": "openai/gpt-oss-120b",
+                                "prompt_tokens": 600,
+                                "completion_tokens": 200,
+                                "total_tokens": 800,
+                            }
+                        )
+                    finally:
+                        await runtime.close()
+
+                asyncio.run(seed_runtime())
+
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    cli.app(
+                        [
+                            "--config",
+                            str(config_path),
+                            "metrics",
+                            "export",
+                            "--format",
+                            "csv",
+                            "--days",
+                            "7",
+                        ]
                     )
-                finally:
-                    await runtime.close()
+                csv_output = stdout.getvalue()
+                self.assertIn("day,revenue,llm_cost,stable_margin", csv_output)
+                self.assertIn("1.25", csv_output)
 
-            asyncio.run(seed_runtime())
-
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                cli.app(
-                    [
-                        "--config",
-                        str(config_path),
-                        "metrics",
-                        "export",
-                        "--format",
-                        "csv",
-                        "--days",
-                        "7",
-                    ]
-                )
-            csv_output = stdout.getvalue()
-            self.assertIn("day,revenue,llm_cost,stable_margin", csv_output)
-            self.assertIn("1.25", csv_output)
-
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                cli.app(
-                    [
-                        "--config",
-                        str(config_path),
-                        "metrics",
-                        "export",
-                        "--format",
-                        "csv",
-                        "--days",
-                        "7",
-                        "--output",
-                        str(metrics_path),
-                    ]
-                )
-            export_meta = json.loads(stdout.getvalue())
-            self.assertTrue(export_meta["written"])
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    cli.app(
+                        [
+                            "--config",
+                            str(config_path),
+                            "metrics",
+                            "export",
+                            "--format",
+                            "csv",
+                            "--days",
+                            "7",
+                            "--output",
+                            str(metrics_path),
+                        ]
+                    )
+                export_meta = json.loads(stdout.getvalue())
+                self.assertTrue(export_meta["written"])
             self.assertIn("stable_margin", metrics_path.read_text())
 
     def test_cli_plugins_list_shows_discovered_entry_points(self) -> None:
@@ -1047,7 +1058,11 @@ paths:
                 "cluster": "devnet",
             },
         )
-        self.runtime = await create_runtime(self.config_path)
+        with patch.dict(
+            os.environ,
+            {"AGENT_ADAPTER_WALLET_ENCRYPTION_KEY": "test-wallet-master-key"},
+        ):
+            self.runtime = await create_runtime(self.config_path)
         self.runtime.wallet.get_balance = AsyncMock(return_value={"sol": 1.25, "usdc": 0.0})  # type: ignore[method-assign]
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
@@ -1078,17 +1093,33 @@ paths:
         )
         self.assertEqual(reused.status_code, 403)
 
-        imported = (
-            await self.client.put(
-                "/manage/wallet/import",
-                json={"secret_key": str(second_keypair)},
-            )
-        ).json()
+        with patch.dict(
+            os.environ,
+            {"AGENT_ADAPTER_WALLET_ENCRYPTION_KEY": "test-wallet-master-key"},
+        ):
+            imported = (
+                await self.client.put(
+                    "/manage/wallet/import",
+                    json={"secret_key": str(second_keypair)},
+                )
+            ).json()
         self.assertEqual(imported["address"], str(second_keypair.pubkey()))
         self.assertTrue(imported["restart_required"])
 
         config = yaml.safe_load(self.config_path.read_text())
-        self.assertEqual(config["wallet"]["config"]["secret_key"], str(second_keypair))
+        self.assertNotIn("secret_key", config["wallet"]["config"])
+
+        await self.client.aclose()
+        await self.runtime.close()
+        with patch.dict(
+            os.environ,
+            {"AGENT_ADAPTER_WALLET_ENCRYPTION_KEY": "test-wallet-master-key"},
+        ):
+            restarted = await create_runtime(self.config_path)
+        try:
+            self.assertEqual(await restarted.wallet.get_address(), str(second_keypair.pubkey()))
+        finally:
+            await restarted.close()
 
     async def test_generated_solana_wallet_persists_identity_and_secret_access(self) -> None:
         await self.client.aclose()
