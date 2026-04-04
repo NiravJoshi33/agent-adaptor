@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 from agent_adapter.plugins.discovery import discover_plugins
+from agent_adapter.store.database import Database
+from agent_adapter.wallet.persistence import (
+    load_persisted_wallet_keypair,
+    persist_wallet_keypair,
+)
 from agent_adapter_contracts.wallet import WalletPlugin
 
 
@@ -14,7 +20,13 @@ def _load_class(module_name: str, class_name: str) -> type:
     return getattr(module, class_name)
 
 
-async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
+async def load_wallet(
+    provider: str,
+    config: dict[str, Any],
+    *,
+    db: Database | None = None,
+    data_dir: str | Path | None = None,
+) -> WalletPlugin:
     """Load and return the configured wallet plugin.
 
     Args:
@@ -56,6 +68,20 @@ async def load_wallet(provider: str, config: dict[str, Any]) -> WalletPlugin:
         secret = config.get("secret_key")
         if secret:
             return SolanaRawWallet.from_base58(secret, rpc_url=rpc_url, cluster=cluster)
+
+        if db is not None and data_dir is not None:
+            persisted = await load_persisted_wallet_keypair(db, Path(data_dir))
+            if persisted is not None:
+                return SolanaRawWallet(
+                    persisted,
+                    rpc_url=rpc_url,
+                    cluster=cluster,
+                )
+
+            wallet = SolanaRawWallet.generate(rpc_url=rpc_url, cluster=cluster)
+            await persist_wallet_keypair(db, Path(data_dir), wallet.keypair)
+            return wallet
+
         return SolanaRawWallet.generate(rpc_url=rpc_url, cluster=cluster)
 
     discovered = discover_plugins("wallet")

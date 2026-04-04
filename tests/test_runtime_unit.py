@@ -113,6 +113,37 @@ class FakeHttpClient:
         pass
 
 
+class FakeQueuedHttpResponse:
+    def __init__(
+        self,
+        status_code: int,
+        body: object,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {"content-type": "application/json"}
+        self._body = body
+        self.text = body if isinstance(body, str) else json.dumps(body)
+
+    def json(self) -> object:
+        if isinstance(self._body, str):
+            raise ValueError("not json")
+        return self._body
+
+
+class FakeQueuedHttpClient:
+    def __init__(self, responses: list[FakeQueuedHttpResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[str, str, dict]] = []
+
+    async def request(self, method: str, url: str, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return self._responses.pop(0)
+
+    async def aclose(self) -> None:
+        return None
+
+
 class FakeRpcResponse:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -586,6 +617,7 @@ class MCPCapabilityTests(unittest.IsolatedAsyncioTestCase):
         jobs = await job_engine.list_recent(1)
         self.assertEqual(jobs[0]["status"], "completed")
         self.assertEqual(jobs[0]["payment_protocol"], "free")
+        self.assertEqual(jobs[0]["payment_amount"], 0.2)
         self.assertEqual(
             [method for method, _, _ in calls],
             [
@@ -723,6 +755,151 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["args"]["platform_url"], "https://tasknet.example"
         )
+
+    async def test_payment_tools_are_exposed_for_x402_and_mpp_flows(self) -> None:
+        tools = build_tool_list()
+        names = {tool["function"]["name"] for tool in tools}
+        self.assertIn("pay_x402__check_requirements", names)
+        self.assertIn("pay_x402__execute", names)
+        self.assertIn("pay_mpp__open_session", names)
+        self.assertIn("pay_mpp__capture", names)
+        self.assertIn("pay_mpp__refund", names)
+
+    async def test_pay_x402_check_requirements_reads_unpaid_402_metadata(self) -> None:
+        header_payload = base64.b64encode(
+            json.dumps(
+                {
+                    "x402Version": 2,
+                    "requirements": [
+                        {
+                            "scheme": "exact",
+                            "network": "solana-devnet",
+                            "maxAmountRequired": "10000",
+                            "payTo": str(Keypair().pubkey()),
+                            "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                        }
+                    ],
+                }
+            ).encode()
+        ).decode()
+        client = FakeQueuedHttpClient(
+            [
+                FakeQueuedHttpResponse(
+                    402,
+                    {"error": "payment required"},
+                    headers={"payment-required": header_payload},
+                )
+            ]
+        )
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            plain_http_client=client,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        raw = await handlers.dispatch(
+            "pay_x402__check_requirements",
+            {
+                "method": "GET",
+                "url": "https://paid.example.com/data",
+                "headers": {},
+                "params": {},
+                "body": None,
+            },
+        )
+        result = json.loads(raw)
+
+        self.assertTrue(result["requires_payment"])
+        self.assertEqual(result["requirements"]["scheme"], "exact")
+        self.assertEqual(result["status_code"], 402)
+
+    async def test_pay_mpp_tools_round_trip_session_and_refund(self) -> None:
+        challenge = {
+            "id": "chlg_123",
+            "realm": "api.example.com",
+            "method": "stripe",
+            "intent": "charge",
+            "request": build_payment_receipt_header(
+                {
+                    "amount": "100",
+                    "currency": "usd",
+                    "description": "Premium API access",
+                    "methodDetails": {"networkId": "internal"},
+                }
+            ),
+            "expires": "2099-01-01T00:00:00Z",
+        }
+        client = FakeStripeClient(
+            [
+                FakeStripeResponse(200, {"id": "pi_123", "status": "succeeded"}),
+                FakeStripeResponse(200, {"id": "re_123"}),
+            ]
+        )
+        payments = load_payment_registry(
+            [{"type": "mpp", "config": {"secret_key": "sk_test_123", "http_client": client}}],
+            wallet=self.wallet,
+        )
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            payments=payments,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        challenge_header = (
+            "Payment "
+            f'id="{challenge["id"]}", '
+            f'realm="{challenge["realm"]}", '
+            'method="stripe", '
+            'intent="charge", '
+            f'request="{challenge["request"]}", '
+            f'expires="{challenge["expires"]}"'
+        )
+        authorization = "Payment " + build_payment_receipt_header(
+            {
+                "challenge": challenge,
+                "payload": {"spt": "spt_123"},
+            }
+        )
+
+        opened_raw = await handlers.dispatch(
+            "pay_mpp__open_session",
+            {
+                "headers": {
+                    "WWW-Authenticate": challenge_header,
+                    "Authorization": authorization,
+                },
+                "challenge": None,
+                "credential": None,
+                "amount": 1.0,
+                "session_url": "",
+                "extra": {},
+                "job_id": "job_123",
+            },
+        )
+        opened = json.loads(opened_raw)
+        self.assertEqual(opened["adapter_id"], "stripe_mpp")
+        self.assertEqual(opened["receipt"]["extra"]["payment_intent_id"], "pi_123")
+
+        captured = json.loads(
+            await handlers.dispatch("pay_mpp__capture", {"session": opened})
+        )
+        self.assertEqual(captured["status"], "settled")
+
+        refunded = json.loads(
+            await handlers.dispatch(
+                "pay_mpp__refund",
+                {"session": captured, "reason": "customer asked nicely"},
+            )
+        )
+        self.assertEqual(refunded["status"], "refunded")
 
     async def test_dynamic_capability_tool_marks_failed_job_for_error_response(self) -> None:
         registry = CapabilityRegistry()

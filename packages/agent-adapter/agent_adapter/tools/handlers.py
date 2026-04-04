@@ -27,7 +27,11 @@ from agent_adapter.store.state import StateStore
 from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.extensions.registry import ExtensionRegistry
 from agent_adapter_contracts.extensions import RuntimeEvent
-from agent_adapter_contracts.payments import PaymentChallenge
+from agent_adapter_contracts.payments import (
+    PaymentChallenge,
+    PaymentReceipt,
+    PaymentSession,
+)
 from agent_adapter_contracts.wallet import WalletPlugin
 
 
@@ -369,6 +373,129 @@ class ToolHandlers:
         signed = await self._wallet.sign_transaction(tx_bytes)
         return {"signed_transaction": signed.hex()}
 
+    # ── x402 payment tools ────────────────────────────────────────────
+
+    async def _handle_pay_x402__check_requirements(self, args: dict) -> dict:
+        response = await self._plain_http_client.request(
+            args["method"].upper(),
+            args["url"],
+            **self._request_kwargs(
+                headers=args.get("headers"),
+                params=args.get("params"),
+                body=args.get("body"),
+            ),
+        )
+        result = self._response_to_result(response)
+        if response.status_code != 402:
+            result["requires_payment"] = False
+            return result
+
+        from payment_x402.plugin import parse_402_requirements
+
+        result["requires_payment"] = True
+        result["requirements"] = parse_402_requirements(dict(response.headers))
+        return result
+
+    async def _handle_pay_x402__execute(self, args: dict) -> dict:
+        method = args["method"].upper()
+        url = args["url"]
+        kwargs = self._request_kwargs(
+            headers=args.get("headers"),
+            params=args.get("params"),
+            body=args.get("body"),
+        )
+        initial = await self._plain_http_client.request(method, url, **kwargs)
+        if initial.status_code != 402:
+            result = self._response_to_result(initial)
+            result["payment"] = None
+            return result
+
+        if self._payments is None:
+            raise ValueError("No payment registry configured")
+
+        from payment_x402.plugin import parse_402_requirements
+
+        requirements = parse_402_requirements(dict(initial.headers))
+        challenge = PaymentChallenge(
+            type="x402",
+            headers=dict(initial.headers),
+            amount=float(requirements.get("maxAmountRequired", 0) or 0) / 1_000_000,
+            extra={
+                "requirements": requirements,
+                "resource": url,
+                "http_method": method,
+            },
+        )
+        adapter = self._payments.resolve(challenge)
+        receipt = await adapter.execute(challenge, self._wallet)
+        payment_header = str(receipt.extra.get("payment_header", ""))
+        if not payment_header:
+            raise ValueError("x402 adapter did not return a payment_header")
+
+        retry_headers = dict(kwargs.get("headers") or {})
+        retry_headers["PAYMENT-SIGNATURE"] = payment_header
+        retried = await self._plain_http_client.request(
+            method,
+            url,
+            **{**kwargs, "headers": retry_headers},
+        )
+        result = self._response_to_result(retried)
+        result["payment"] = {
+            "protocol": receipt.protocol,
+            "amount": receipt.amount,
+            "currency": receipt.currency,
+            "network": receipt.extra.get("network", ""),
+        }
+        return result
+
+    # ── MPP payment tools ─────────────────────────────────────────────
+
+    async def _handle_pay_mpp__open_session(self, args: dict) -> dict:
+        if self._payments is None:
+            raise ValueError("No payment registry configured")
+        extra = dict(args.get("extra") or {})
+        if args.get("challenge") is not None:
+            extra["challenge"] = args["challenge"]
+        if args.get("credential") is not None:
+            extra["credential"] = args["credential"]
+        challenge = PaymentChallenge(
+            type="mpp",
+            headers=args.get("headers") or {},
+            amount=float(args.get("amount", 0.0) or 0.0),
+            session_url=str(args.get("session_url", "") or ""),
+            extra=extra,
+        )
+        adapter = self._payments.resolve(challenge)
+        receipt = await adapter.execute(challenge, self._wallet)
+        session = PaymentSession(
+            job_id=str(args.get("job_id", "") or ""),
+            adapter_id=adapter.id,
+            challenge=challenge,
+            receipt=receipt,
+            status=(
+                "authorized"
+                if receipt.extra.get("authorization_header")
+                else "secured"
+            ),
+        )
+        return self._serialize_payment_session(session)
+
+    async def _handle_pay_mpp__capture(self, args: dict) -> dict:
+        session = self._payment_session_from_dict(args["session"])
+        adapter = self._require_payment_adapter(session.challenge.type)
+        previous_status = session.status
+        await adapter.settle(session)
+        if session.status == previous_status:
+            session.status = "settled"
+        return self._serialize_payment_session(session)
+
+    async def _handle_pay_mpp__refund(self, args: dict) -> dict:
+        session = self._payment_session_from_dict(args["session"])
+        adapter = self._require_payment_adapter(session.challenge.type)
+        await adapter.refund(session, str(args.get("reason", "")))
+        session.status = "refunded"
+        return self._serialize_payment_session(session)
+
     # ── Escrow payment tools ───────────────────────────────────────
 
     async def _handle_pay_escrow__prepare_lock(self, args: dict) -> dict:
@@ -513,8 +640,8 @@ class ToolHandlers:
             job_id = await self._job_engine.create(
                 capability=capability.name,
                 input_data=args,
-                payment_protocol="free",
-                payment_amount=0.0,
+                payment_protocol="x402" if self._x402_http_client else "free",
+                payment_amount=self._estimate_payment_amount(capability, args),
                 payment_currency=capability.pricing.currency,
             )
             await self._job_engine.mark_executing(job_id)
@@ -560,16 +687,7 @@ class ToolHandlers:
         params: dict[str, str] | None = None,
         body: Any = None,
     ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "headers": headers or {},
-            "params": params or {},
-        }
-        if body is not None:
-            if isinstance(body, (dict, list)):
-                kwargs["json"] = body
-            else:
-                kwargs["content"] = str(body)
-
+        kwargs = self._request_kwargs(headers=headers, params=params, body=body)
         resp = await self._http_client.request(method.upper(), url, **kwargs)
         payment_result: dict[str, Any] | None = None
         if self._payments and resp.status_code == 402:
@@ -579,14 +697,7 @@ class ToolHandlers:
                 resp,
                 kwargs=kwargs,
             )
-        result: dict[str, Any] = {
-            "status_code": resp.status_code,
-            "headers": dict(resp.headers),
-        }
-        try:
-            result["body"] = resp.json()
-        except Exception:
-            result["body"] = resp.text[:4000]
+        result = self._response_to_result(resp)
         if payment_result:
             result["payment"] = payment_result
         return result
@@ -654,6 +765,35 @@ class ToolHandlers:
             raise ValueError("Capability is missing a base_url")
         return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
+    def _request_kwargs(
+        self,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        body: Any = None,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "headers": headers or {},
+            "params": params or {},
+        }
+        if body is not None:
+            if isinstance(body, (dict, list)):
+                kwargs["json"] = body
+            else:
+                kwargs["content"] = str(body)
+        return kwargs
+
+    def _response_to_result(self, response: Any) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status_code": response.status_code,
+            "headers": dict(response.headers),
+        }
+        try:
+            result["body"] = response.json()
+        except Exception:
+            result["body"] = response.text[:4000]
+        return result
+
     def _estimate_payment_amount(self, capability: Any, args: dict[str, Any]) -> float:
         pricing = capability.pricing
         if pricing is None:
@@ -696,6 +836,68 @@ class ToolHandlers:
         if self._payments is None:
             raise ValueError("No payment registry configured")
         return self._payments.resolve(PaymentChallenge(type=challenge_type))
+
+    def _serialize_payment_challenge(
+        self, challenge: PaymentChallenge
+    ) -> dict[str, Any]:
+        return {
+            "type": challenge.type,
+            "headers": dict(challenge.headers),
+            "platform": challenge.platform,
+            "task_id": challenge.task_id,
+            "amount": challenge.amount,
+            "session_url": challenge.session_url,
+            "extra": dict(challenge.extra),
+        }
+
+    def _serialize_payment_receipt(self, receipt: PaymentReceipt | None) -> dict[str, Any] | None:
+        if receipt is None:
+            return None
+        return {
+            "protocol": receipt.protocol,
+            "amount": receipt.amount,
+            "currency": receipt.currency,
+            "tx_signature": receipt.tx_signature,
+            "extra": dict(receipt.extra),
+        }
+
+    def _serialize_payment_session(self, session: PaymentSession) -> dict[str, Any]:
+        return {
+            "job_id": session.job_id,
+            "adapter_id": session.adapter_id,
+            "status": session.status,
+            "challenge": self._serialize_payment_challenge(session.challenge),
+            "receipt": self._serialize_payment_receipt(session.receipt),
+        }
+
+    def _payment_session_from_dict(self, payload: dict[str, Any]) -> PaymentSession:
+        challenge_payload = payload.get("challenge") or {}
+        receipt_payload = payload.get("receipt")
+        return PaymentSession(
+            job_id=str(payload.get("job_id", "") or ""),
+            adapter_id=str(payload.get("adapter_id", "") or ""),
+            status=str(payload.get("status", "pending") or "pending"),
+            challenge=PaymentChallenge(
+                type=str(challenge_payload.get("type", "mpp") or "mpp"),
+                headers=dict(challenge_payload.get("headers") or {}),
+                platform=str(challenge_payload.get("platform", "") or ""),
+                task_id=str(challenge_payload.get("task_id", "") or ""),
+                amount=float(challenge_payload.get("amount", 0.0) or 0.0),
+                session_url=str(challenge_payload.get("session_url", "") or ""),
+                extra=dict(challenge_payload.get("extra") or {}),
+            ),
+            receipt=(
+                None
+                if receipt_payload is None
+                else PaymentReceipt(
+                    protocol=str(receipt_payload.get("protocol", "mpp") or "mpp"),
+                    amount=float(receipt_payload.get("amount", 0.0) or 0.0),
+                    currency=str(receipt_payload.get("currency", "USDC") or "USDC"),
+                    tx_signature=str(receipt_payload.get("tx_signature", "") or ""),
+                    extra=dict(receipt_payload.get("extra") or {}),
+                )
+            ),
+        )
 
     async def close(self) -> None:
         if self._owns_plain_http_client:

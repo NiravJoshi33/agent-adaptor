@@ -251,8 +251,12 @@ function renderWallet(wallet) {
       <div class="stack-form">
         <div class="action-row">
           <button id="wallet-export" class="button" ${wallet.export_supported ? "" : "disabled"}>Export key</button>
-          <span class="muted">${wallet.export_supported ? "Exports the current local wallet secret." : "Current provider does not support export."}</span>
+          <span class="muted">${wallet.export_supported ? "Requires a short-lived CLI export token." : "Current provider does not support export."}</span>
         </div>
+        <label class="stack-field">
+          <span>CLI Export Token</span>
+          <input id="wallet-export-token" type="password" placeholder="agent-adapter wallet export-token" ${wallet.export_supported ? "" : "disabled"} />
+        </label>
         <label class="stack-field">
           <span>Exported Secret</span>
           <textarea id="wallet-export-output" rows="4" readonly placeholder="Exported secret will appear here"></textarea>
@@ -635,10 +639,15 @@ function wirePromptControls() {
 function wireWalletControls() {
   const exportButton = document.getElementById("wallet-export");
   const exportOutput = document.getElementById("wallet-export-output");
-  if (exportButton && exportOutput) {
+  const exportToken = document.getElementById("wallet-export-token");
+  if (exportButton && exportOutput && exportToken) {
     exportButton.addEventListener("click", async () => {
-      const payload = await fetchJSON("/manage/wallet/export", { method: "POST" });
+      const payload = await fetchJSON("/manage/wallet/export", {
+        method: "POST",
+        body: JSON.stringify({ token: exportToken.value || "" }),
+      });
       exportOutput.value = payload.secret_key || "";
+      exportToken.value = "";
     });
   }
 

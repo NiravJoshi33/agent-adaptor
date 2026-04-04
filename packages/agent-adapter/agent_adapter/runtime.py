@@ -7,6 +7,8 @@ import csv
 import json
 import io
 import os
+import hashlib
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -613,6 +615,7 @@ class RuntimeContext:
             "chain": chain,
             "rpc_url": rpc_url,
             "export_supported": provider == "solana-raw" or hasattr(self.wallet, "keypair"),
+            "export_requires_token": True,
             "import_supported": True,
             "import_requires_restart": True,
             "faucet_links": faucet_links,
@@ -802,6 +805,54 @@ class RuntimeContext:
             "encoding": "base58",
             "secret_key": secret_key,
         }
+
+    async def issue_wallet_export_token(
+        self, *, ttl_seconds: int = 300
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=max(ttl_seconds, 1))
+        token = secrets.token_urlsafe(24)
+        await self.state.set(
+            "management_tokens",
+            "wallet_export",
+            {
+                "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                "issued_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+        )
+        return {
+            "token": token,
+            "issued_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "scope": "wallet_export",
+        }
+
+    async def validate_wallet_export_token(self, token: str) -> None:
+        payload = await self.state.get("management_tokens", "wallet_export")
+        now = datetime.now(timezone.utc)
+        if not payload:
+            raise PermissionError("Wallet export token missing or expired")
+
+        expected_hash = str(payload.get("token_hash", ""))
+        expires_at_raw = str(payload.get("expires_at", ""))
+        if not expected_hash or not expires_at_raw:
+            await self.state.delete("management_tokens", "wallet_export")
+            raise PermissionError("Wallet export token missing or expired")
+
+        try:
+            expires_at = datetime.fromisoformat(expires_at_raw)
+        except ValueError as exc:
+            await self.state.delete("management_tokens", "wallet_export")
+            raise PermissionError("Wallet export token missing or expired") from exc
+
+        if not token or hashlib.sha256(token.encode()).hexdigest() != expected_hash:
+            raise PermissionError("Wallet export token is invalid")
+        if now >= expires_at:
+            await self.state.delete("management_tokens", "wallet_export")
+            raise PermissionError("Wallet export token missing or expired")
+
+        await self.state.delete("management_tokens", "wallet_export")
 
     async def import_wallet_secret(self, secret_key: str) -> dict[str, Any]:
         from solders.keypair import Keypair
@@ -1141,7 +1192,10 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
 
     wallet_cfg = config.get("wallet", {})
     wallet = await load_wallet(
-        wallet_cfg.get("provider", "solana-raw"), wallet_cfg.get("config", {})
+        wallet_cfg.get("provider", "solana-raw"),
+        wallet_cfg.get("config", {}),
+        db=db,
+        data_dir=_data_dir(config, config_path),
     )
 
     key_material = (
@@ -1197,4 +1251,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
     )
     runtime.handlers._whoami_fn = runtime.whoami
     await load_drivers(config.get("drivers"), runtime=runtime, registry=drivers)
+    for extension in extensions._extensions:
+        if hasattr(extension, "initialize"):
+            await extension.initialize(runtime)
     return runtime

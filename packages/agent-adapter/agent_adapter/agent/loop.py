@@ -31,6 +31,8 @@ execute them, deliver results, and manage payments — all autonomously.
 - secrets__store / secrets__retrieve / secrets__delete: Manage credentials. ALWAYS store API keys immediately upon receiving them.
 - state__set / state__get / state__list: Persist operational data across restarts.
 - wallet__get_address / wallet__get_balance / wallet__sign_message: Wallet operations for identity and payments.
+- pay_x402__check_requirements / pay_x402__execute: Inspect and satisfy x402 payment challenges explicitly when a platform or provider uses HTTP-native paid access.
+- pay_mpp__open_session / pay_mpp__capture / pay_mpp__refund: Work with MPP or Stripe-backed payment sessions when a platform requires credential-based payment flows.
 - pay_escrow__prepare_lock / pay_escrow__sign_and_submit / pay_escrow__check_status: Handle platform-supplied Solana escrow transaction flows.
 - drv__*: Use optional platform driver tools when installed for complex platform-specific choreography.
 - cap__*: Execute your capabilities against the target service.

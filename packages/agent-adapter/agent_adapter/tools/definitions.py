@@ -156,6 +156,66 @@ class wallet__sign_transaction(BaseModel):
     )
 
 
+# ── Payment tools ─────────────────────────────────────────────────────
+
+
+class pay_x402__check_requirements(BaseModel):
+    """Make an unpaid HTTP request and inspect x402 payment requirements if the server responds with 402."""
+
+    method: str = Field(description="HTTP method: GET, POST, PUT, PATCH, DELETE")
+    url: str = Field(description="Full URL to request")
+    headers: dict[str, str] = Field(
+        default_factory=dict, description="Request headers"
+    )
+    body: dict | list | str | None = Field(
+        default=None, description="Request body (JSON or string)"
+    )
+    params: dict[str, str] = Field(
+        default_factory=dict, description="Query parameters"
+    )
+
+
+class pay_x402__execute(BaseModel):
+    """Handle an x402-protected HTTP request end-to-end and return the paid response."""
+
+    method: str = Field(description="HTTP method: GET, POST, PUT, PATCH, DELETE")
+    url: str = Field(description="Full URL to request")
+    headers: dict[str, str] = Field(
+        default_factory=dict, description="Request headers"
+    )
+    body: dict | list | str | None = Field(
+        default=None, description="Request body (JSON or string)"
+    )
+    params: dict[str, str] = Field(
+        default_factory=dict, description="Query parameters"
+    )
+
+
+class pay_mpp__open_session(BaseModel):
+    """Open or join an MPP payment session via the configured payment adapter and return a serializable session payload."""
+
+    headers: dict[str, str] = Field(default_factory=dict, description="HTTP challenge or authorization headers")
+    challenge: dict | None = Field(default=None, description="Optional structured payment challenge metadata")
+    credential: dict | None = Field(default=None, description="Optional structured payment credential metadata")
+    amount: float = Field(default=0.0, description="Payment amount in major units when known")
+    session_url: str = Field(default="", description="Optional payment session URL")
+    extra: dict = Field(default_factory=dict, description="Additional adapter-specific payment metadata")
+    job_id: str = Field(default="", description="Optional job identifier for tracing")
+
+
+class pay_mpp__capture(BaseModel):
+    """Capture or settle an existing MPP payment session."""
+
+    session: dict = Field(description="Serialized session payload returned by pay_mpp__open_session")
+
+
+class pay_mpp__refund(BaseModel):
+    """Refund an existing MPP payment session."""
+
+    session: dict = Field(description="Serialized session payload returned by pay_mpp__open_session")
+    reason: str = Field(default="requested_by_customer", description="Refund reason passed to the payment adapter")
+
+
 # ── Escrow payment tools ──────────────────────────────────────────────
 
 
@@ -201,6 +261,11 @@ CORE_TOOL_MODELS: list[type[BaseModel]] = [
     wallet__get_balance,
     wallet__sign_message,
     wallet__sign_transaction,
+    pay_x402__check_requirements,
+    pay_x402__execute,
+    pay_mpp__open_session,
+    pay_mpp__capture,
+    pay_mpp__refund,
     pay_escrow__prepare_lock,
     pay_escrow__sign_and_submit,
     pay_escrow__check_status,

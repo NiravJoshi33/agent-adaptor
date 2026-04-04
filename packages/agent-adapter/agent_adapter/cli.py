@@ -50,6 +50,8 @@ def _parser() -> argparse.ArgumentParser:
     wallet_sub = wallet.add_subparsers(dest="wallet_command", required=True)
     wallet_sub.add_parser("address")
     wallet_sub.add_parser("balance")
+    wallet_export_token = wallet_sub.add_parser("export-token")
+    wallet_export_token.add_argument("--ttl-seconds", type=int, default=300)
     wallet_export = wallet_sub.add_parser("export")
     wallet_export.add_argument("--yes", action="store_true")
     wallet_export.add_argument("--output")
@@ -206,6 +208,8 @@ async def _run_wallet_command(args: argparse.Namespace) -> Any:
                 "address": await runtime.wallet.get_address(),
                 "balances": await runtime.wallet.get_balance(),
             }
+        if args.wallet_command == "export-token":
+            return await runtime.issue_wallet_export_token(ttl_seconds=args.ttl_seconds)
         if args.wallet_command == "export":
             if not args.yes:
                 raise ValueError("wallet export requires --yes because it reveals private key material.")

@@ -36,6 +36,10 @@ class WalletImportRequest(BaseModel):
     secret_key: str
 
 
+class WalletExportRequest(BaseModel):
+    token: str = ""
+
+
 def create_management_app(runtime: RuntimeContext) -> FastAPI:
     app = FastAPI(
         title="Agent Adapter Management API",
@@ -54,9 +58,12 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
         return await runtime.get_wallet_overview()
 
     @app.post("/manage/wallet/export")
-    async def export_wallet():
+    async def export_wallet(request: WalletExportRequest):
         try:
+            await runtime.validate_wallet_export_token(request.token)
             return await runtime.export_wallet_secret()
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except NotImplementedError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

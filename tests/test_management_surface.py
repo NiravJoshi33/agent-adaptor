@@ -336,6 +336,21 @@ class CLITests(unittest.TestCase):
             self.assertTrue(exported["written"])
             self.assertEqual(export_path.read_text().strip(), str(first_keypair))
 
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "wallet",
+                        "export-token",
+                        "--ttl-seconds",
+                        "120",
+                    ]
+                )
+            token_payload = json.loads(stdout.getvalue())
+            self.assertEqual(token_payload["scope"], "wallet_export")
+
             import_path = root / "import.txt"
             import_path.write_text(str(second_keypair))
             stdout = io.StringIO()
@@ -1041,10 +1056,26 @@ paths:
         wallet = (await self.client.get("/manage/wallet")).json()
         self.assertEqual(wallet["address"], str(first_keypair.pubkey()))
         self.assertTrue(wallet["export_supported"])
+        self.assertTrue(wallet["export_requires_token"])
         self.assertTrue(wallet["faucet_links"])
 
-        exported = (await self.client.post("/manage/wallet/export")).json()
+        denied = await self.client.post("/manage/wallet/export", json={"token": ""})
+        self.assertEqual(denied.status_code, 403)
+
+        token = await self.runtime.issue_wallet_export_token(ttl_seconds=60)
+        exported = (
+            await self.client.post(
+                "/manage/wallet/export",
+                json={"token": token["token"]},
+            )
+        ).json()
         self.assertEqual(exported["secret_key"], str(first_keypair))
+
+        reused = await self.client.post(
+            "/manage/wallet/export",
+            json={"token": token["token"]},
+        )
+        self.assertEqual(reused.status_code, 403)
 
         imported = (
             await self.client.put(
@@ -1057,6 +1088,74 @@ paths:
 
         config = yaml.safe_load(self.config_path.read_text())
         self.assertEqual(config["wallet"]["config"]["secret_key"], str(second_keypair))
+
+    async def test_generated_solana_wallet_persists_identity_and_secret_access(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(
+            self.config_path,
+            self.spec_path,
+            wallet_provider="solana-raw",
+            wallet_config={
+                "rpc_url": "http://127.0.0.1:8899",
+                "cluster": "devnet",
+            },
+        )
+
+        first_runtime = await create_runtime(self.config_path)
+        try:
+            first_address = await first_runtime.wallet.get_address()
+            await first_runtime.secrets.store("tasknet", "api_key", "secret-123")
+        finally:
+            await first_runtime.close()
+
+        second_runtime = await create_runtime(self.config_path)
+        try:
+            second_address = await second_runtime.wallet.get_address()
+            restored = await second_runtime.secrets.retrieve("tasknet", "api_key")
+        finally:
+            await second_runtime.close()
+
+        self.assertEqual(second_address, first_address)
+        self.assertEqual(restored, "secret-123")
+
+    async def test_create_runtime_initializes_extensions_with_runtime_context(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+        config = yaml.safe_load(self.config_path.read_text())
+        config["extensions"] = [
+            {
+                "module": "tests.test_management_surface",
+                "class_name": "TestExtension",
+                "config": {},
+            }
+        ]
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        self.runtime = await create_runtime(self.config_path)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
+            base_url="http://testserver",
+        )
+
+        extension = self.runtime.extensions._extensions[0]
+        self.assertIsInstance(extension, TestExtension)
+        self.assertIs(extension.runtime, self.runtime)
 
     async def test_webhook_notifier_extension_receives_runtime_events(self) -> None:
         await self.client.aclose()
