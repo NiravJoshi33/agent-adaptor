@@ -1,4 +1,4 @@
-"""Local dashboard pages rendered by the management API process."""
+"""Dashboard serving – React SPA (primary) with legacy HTML fallback."""
 
 from __future__ import annotations
 
@@ -7,13 +7,22 @@ from html import escape
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_adapter.runtime import RuntimeContext
 
 _STATIC_DIR = Path(__file__).with_name("static")
+_SPA_DIR = Path(__file__).with_name("dashboard-dist")
 
+
+def _has_spa() -> bool:
+    return (_SPA_DIR / "index.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# Legacy server-rendered HTML shell (kept as fallback when SPA not built)
+# ---------------------------------------------------------------------------
 
 def _shell(title: str, body: str, page_data: dict | None = None) -> str:
     data_attr = (
@@ -109,8 +118,48 @@ def _shell(title: str, body: str, page_data: dict | None = None) -> str:
 </html>"""
 
 
+# ---------------------------------------------------------------------------
+# Mount
+# ---------------------------------------------------------------------------
+
 def mount_dashboard(app: FastAPI, runtime: RuntimeContext) -> None:
+    # Always mount legacy static assets
     app.mount("/dashboard/static", StaticFiles(directory=_STATIC_DIR), name="dashboard-static")
+
+    if _has_spa():
+        _mount_spa(app)
+    else:
+        _mount_legacy(app, runtime)
+
+
+def _mount_spa(app: FastAPI) -> None:
+    """Serve the built React SPA with a catch-all for client-side routing."""
+
+    # Serve SPA assets (JS, CSS, images)
+    app.mount(
+        "/dashboard/assets",
+        StaticFiles(directory=_SPA_DIR / "assets"),
+        name="dashboard-spa-assets",
+    )
+
+    # SPA catch-all: serve index.html for all dashboard routes
+    @app.get("/dashboard/{full_path:path}", response_class=FileResponse, include_in_schema=False)
+    async def spa_catchall(full_path: str = ""):
+        # If the request is for a real file in dist, serve it
+        candidate = _SPA_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        # Otherwise serve index.html for client-side routing
+        return FileResponse(_SPA_DIR / "index.html")
+
+    @app.get("/dashboard", include_in_schema=False)
+    async def spa_redirect():
+        from starlette.responses import RedirectResponse
+        return RedirectResponse("/dashboard/", status_code=307)
+
+
+def _mount_legacy(app: FastAPI, runtime: RuntimeContext) -> None:
+    """Legacy server-rendered HTML dashboard (fallback when SPA not built)."""
 
     @app.get("/dashboard/login", response_class=HTMLResponse, include_in_schema=False)
     async def dashboard_login(next: str = "/dashboard/"):

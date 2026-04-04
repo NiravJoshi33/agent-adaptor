@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --text: #111111;
+  --text-2: #444444;
+  --text-3: #888888;
+  --text-4: #bbbbbb;
+  --bg-card: #ffffff;
+  --bg-input: #f0ebe4;
+  --accent-rose: #d97059;
+  --border: rgba(0, 0, 0, 0.1);
+  --border-mid: rgba(0, 0, 0, 0.15);
+  --border-strong: rgba(0, 0, 0, 0.22);
+  --node-active: #1a1410;
+  --track-fill: #1a1410;
+  --blob: radial-gradient(
+    ellipse 900px 700px at 70% 100%,
+    rgba(220, 165, 140, 0.38) 0%,
+    rgba(235, 195, 175, 0.2) 45%,
+    transparent 70%
+  );
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono",
+    Menlo, monospace;
+}
+
+body {
+  background: #faf8f5;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: var(--blob);
+  z-index: 0;
+}
+
+@layer base {
+  * {
+    @apply border-[rgba(0,0,0,0.1)];
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+}
+
+/* Eyebrow / label utility */
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+/* Stagger animation delays */
+.stagger-1 { animation-delay: 0.1s; }
+.stagger-2 { animation-delay: 0.18s; }
+.stagger-3 { animation-delay: 0.28s; }
+.stagger-4 { animation-delay: 0.36s; }
+.stagger-5 { animation-delay: 0.45s; }
+.stagger-6 { animation-delay: 0.55s; }
