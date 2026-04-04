@@ -79,10 +79,7 @@ def _secrets_encryption_key(config: dict[str, Any]) -> str:
     configured = str(config.get("adapter", {}).get("secretsEncryptionKey", "") or "")
     if configured:
         return configured
-    env_key = os.environ.get("AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY", "")
-    if env_key:
-        return env_key
-    return _wallet_encryption_key(config)
+    return os.environ.get("AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY", "")
 
 
 async def _legacy_wallet_secret_material(wallet: Any) -> bytes:
@@ -1235,6 +1232,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
     config = load_config(config_path)
     db = Database(_db_path(config, config_path))
     await db.connect()
+    runtime: RuntimeContext | None = None
     try:
         wallet_cfg = config.get("wallet", {})
         wallet = await load_wallet(
@@ -1249,8 +1247,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
         if not secrets_encryption_key:
             raise ValueError(
                 "Secrets encryption requires adapter.secretsEncryptionKey, "
-                "AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY, adapter.walletEncryptionKey, "
-                "or AGENT_ADAPTER_WALLET_ENCRYPTION_KEY."
+                "or AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY."
             )
         secrets_backend = ExternalSecretsBackend(secrets_encryption_key)
         if await _has_persisted_secrets(db):
@@ -1315,5 +1312,8 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
                 await extension.initialize(runtime)
         return runtime
     except Exception:
-        await db.close()
+        if runtime is not None:
+            await runtime.close()
+        else:
+            await db.close()
         raise

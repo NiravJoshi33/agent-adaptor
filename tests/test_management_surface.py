@@ -622,6 +622,22 @@ class TestExtension:
         self.shutdown_called = True
 
 
+class FailingInitExtension:
+    last_instance: "FailingInitExtension | None" = None
+
+    def __init__(self) -> None:
+        self.runtime = None
+        self.shutdown_called = False
+        type(self).last_instance = self
+
+    async def initialize(self, runtime) -> None:
+        self.runtime = runtime
+        raise RuntimeError("extension init failed")
+
+    async def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
 class SignlessWalletPlugin:
     def __init__(
         self,
@@ -1261,6 +1277,27 @@ paths:
             with self.assertRaisesRegex(ValueError, "walletEncryptionKey"):
                 await create_runtime(self.config_path)
 
+    async def test_create_runtime_requires_dedicated_secrets_encryption_key(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+        config = yaml.safe_load(self.config_path.read_text())
+        config["adapter"].pop("secretsEncryptionKey", None)
+        config["adapter"]["walletEncryptionKey"] = "wallet-only-key"
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY", None)
+            with self.assertRaisesRegex(ValueError, "secretsEncryptionKey"):
+                await create_runtime(self.config_path)
+
     async def test_create_runtime_initializes_extensions_with_runtime_context(self) -> None:
         await self.client.aclose()
         await self.runtime.close()
@@ -1320,6 +1357,34 @@ paths:
         await runtime.close()
 
         self.assertTrue(extension.shutdown_called)
+
+    async def test_create_runtime_failure_shuts_down_initialized_extensions(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+        config = yaml.safe_load(self.config_path.read_text())
+        config["extensions"] = [
+            {
+                "module": "tests.test_management_surface",
+                "class_name": "FailingInitExtension",
+                "config": {},
+            }
+        ]
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+        FailingInitExtension.last_instance = None
+
+        with self.assertRaisesRegex(RuntimeError, "extension init failed"):
+            await create_runtime(self.config_path)
+
+        assert FailingInitExtension.last_instance is not None
+        self.assertTrue(FailingInitExtension.last_instance.shutdown_called)
 
     async def test_create_runtime_uses_external_secret_key_for_plugins_without_secret_bytes(self) -> None:
         await self.client.aclose()

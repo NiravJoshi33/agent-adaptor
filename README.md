@@ -209,7 +209,9 @@ uv sync
 This is the fastest way to see the runtime without external dependencies.
 
 ```bash
-env UV_CACHE_DIR=/tmp/uv-cache uv run agent-adapter --config simulation/dashboard-preview.yaml start --api-only
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret \
+  UV_CACHE_DIR=/tmp/uv-cache \
+  uv run agent-adapter --config simulation/dashboard-preview.yaml start --api-only
 ```
 
 Then open:
@@ -230,12 +232,12 @@ Useful pages:
 ## Common CLI Commands
 
 ```bash
-uv run agent-adapter --config simulation/dashboard-preview.yaml status
-uv run agent-adapter --config simulation/dashboard-preview.yaml capabilities list
-uv run agent-adapter --config simulation/dashboard-preview.yaml prompt show
-uv run agent-adapter --config simulation/dashboard-preview.yaml metrics summary --days 30
-uv run agent-adapter --config simulation/dashboard-preview.yaml drivers list
-uv run agent-adapter --config simulation/dashboard-preview.yaml wallet address
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml status
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml capabilities list
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml prompt show
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml metrics summary --days 30
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml drivers list
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml wallet address
 ```
 
 Initialize a fresh runtime:
