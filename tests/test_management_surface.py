@@ -22,6 +22,9 @@ from agent_adapter.management import create_management_app
 from agent_adapter.runtime import create_runtime
 from agent_adapter.extensions import load_extensions
 from agent_adapter.payments import load_payment_registry
+from agent_adapter.store.database import Database
+from agent_adapter.store.encryption import WalletDerivedSecretsBackend
+from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.wallet.loader import load_wallet
 from tests.dummy_plugins import DummyWalletPlugin
 
@@ -74,6 +77,7 @@ def _write_config(
         "adapter": {
             "name": "test-agent",
             "dataDir": str(path.parent / "data"),
+            "secretsEncryptionKey": "test-secrets-master-key",
             "dashboard": {"bind": "127.0.0.1", "port": 9090},
         },
         "wallet": {
@@ -160,6 +164,11 @@ class CLITests(unittest.TestCase):
             self.assertTrue(config_path.exists())
             self.assertTrue(Path(payload["database"]).exists())
             self.assertTrue(Path(payload["prompt"]).exists())
+            config = yaml.safe_load(config_path.read_text())
+            self.assertEqual(
+                config["adapter"]["secretsEncryptionKey"],
+                "${AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY}",
+            )
 
     def test_cli_status_and_capability_updates_use_runtime_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -604,9 +613,39 @@ class FileDriver(PlatformDriver):
 class TestExtension:
     def __init__(self) -> None:
         self.runtime = None
+        self.shutdown_called = False
 
     async def initialize(self, runtime) -> None:
         self.runtime = runtime
+
+    async def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+class SignlessWalletPlugin:
+    def __init__(
+        self,
+        address: str = "signless-wallet",
+        sol: float = 0.5,
+        usdc: float = 1.0,
+    ) -> None:
+        self._address = address
+        self._balances = {"sol": sol, "usdc": usdc}
+
+    async def initialize(self) -> None:
+        return None
+
+    async def get_address(self) -> str:
+        return self._address
+
+    async def get_balance(self, chain: str | None = None) -> dict[str, float]:
+        return dict(self._balances)
+
+    async def sign_message(self, msg: bytes) -> bytes:
+        raise AssertionError("create_runtime should not derive secrets from sign_message")
+
+    async def sign_transaction(self, tx: bytes) -> bytes:
+        return tx
 
 
 class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
@@ -1093,6 +1132,8 @@ paths:
         )
         self.assertEqual(reused.status_code, 403)
 
+        await self.runtime.secrets.store("tasknet", "api_key", "secret-before-import")
+
         with patch.dict(
             os.environ,
             {"AGENT_ADAPTER_WALLET_ENCRYPTION_KEY": "test-wallet-master-key"},
@@ -1118,8 +1159,10 @@ paths:
             restarted = await create_runtime(self.config_path)
         try:
             self.assertEqual(await restarted.wallet.get_address(), str(second_keypair.pubkey()))
+            restored = await restarted.secrets.retrieve("tasknet", "api_key")
         finally:
             await restarted.close()
+        self.assertEqual(restored, "secret-before-import")
 
     async def test_generated_solana_wallet_persists_identity_and_secret_access(self) -> None:
         await self.client.aclose()
@@ -1161,6 +1204,37 @@ paths:
 
         self.assertEqual(second_address, first_address)
         self.assertEqual(restored, "secret-123")
+
+    async def test_create_runtime_migrates_legacy_wallet_derived_secrets(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+
+        db = Database(self.root / "data" / "adapter.db")
+        await db.connect()
+        try:
+            legacy_store = SecretsStore(
+                db,
+                WalletDerivedSecretsBackend(b"\x22" * 64),
+            )
+            await legacy_store.store("tasknet", "api_key", "legacy-secret")
+        finally:
+            await db.close()
+
+        runtime = await create_runtime(self.config_path)
+        try:
+            restored = await runtime.secrets.retrieve("tasknet", "api_key")
+        finally:
+            await runtime.close()
+
+        self.assertEqual(restored, "legacy-secret")
 
     async def test_generated_solana_wallet_requires_external_encryption_key(self) -> None:
         await self.client.aclose()
@@ -1217,6 +1291,68 @@ paths:
         extension = self.runtime.extensions._extensions[0]
         self.assertIsInstance(extension, TestExtension)
         self.assertIs(extension.runtime, self.runtime)
+
+    async def test_runtime_close_shuts_down_extensions(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+        config = yaml.safe_load(self.config_path.read_text())
+        config["extensions"] = [
+            {
+                "module": "tests.test_management_surface",
+                "class_name": "TestExtension",
+                "config": {},
+            }
+        ]
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        runtime = await create_runtime(self.config_path)
+        extension = runtime.extensions._extensions[0]
+        self.assertIsInstance(extension, TestExtension)
+
+        await runtime.close()
+
+        self.assertTrue(extension.shutdown_called)
+
+    async def test_create_runtime_uses_external_secret_key_for_plugins_without_secret_bytes(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(
+            self.config_path,
+            self.spec_path,
+            wallet_provider="custom",
+            wallet_config={
+                "module": "tests.test_management_surface",
+                "class_name": "SignlessWalletPlugin",
+                "address": "plugin-wallet",
+                "sol": 2.0,
+                "usdc": 5.0,
+            },
+        )
+
+        runtime = await create_runtime(self.config_path)
+        try:
+            self.assertEqual(await runtime.wallet.get_address(), "plugin-wallet")
+            await runtime.secrets.store("tasknet", "api_key", "plugin-secret")
+            restored = await runtime.secrets.retrieve("tasknet", "api_key")
+        finally:
+            await runtime.close()
+
+        self.assertEqual(restored, "plugin-secret")
 
     async def test_webhook_notifier_extension_receives_runtime_events(self) -> None:
         await self.client.aclose()

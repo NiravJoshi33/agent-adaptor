@@ -1,6 +1,7 @@
 adapter:
   name: "weatherpro-agent"
   dataDir: "./simulation/data"
+  secretsEncryptionKey: "simulation-local-secrets-key"
 
 wallet:
   provider: "ows"

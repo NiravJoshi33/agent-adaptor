@@ -27,3 +27,12 @@ class ExtensionRegistry:
             and hasattr(ext, hook_name)
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        tasks = [
+            ext.shutdown()
+            for ext in self._extensions
+            if hasattr(ext, "shutdown")
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

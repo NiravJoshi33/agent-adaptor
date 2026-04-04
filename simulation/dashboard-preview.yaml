@@ -1,6 +1,7 @@
 adapter:
   name: "preview-agent"
   dataDir: "./simulation/data-preview"
+  secretsEncryptionKey: "preview-local-secrets-key"
   dashboard:
     bind: "127.0.0.1"
     port: 9090

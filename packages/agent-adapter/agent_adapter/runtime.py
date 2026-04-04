@@ -35,7 +35,10 @@ from agent_adapter.drivers import DriverRegistry, load_drivers
 from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.payments import PaymentRegistry, load_payment_registry
 from agent_adapter.store.database import Database
-from agent_adapter.store.encryption import WalletDerivedSecretsBackend
+from agent_adapter.store.encryption import (
+    ExternalSecretsBackend,
+    migrate_legacy_wallet_secrets,
+)
 from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
 from agent_adapter.tools.handlers import ToolHandlers
@@ -70,6 +73,28 @@ def _wallet_encryption_key(config: dict[str, Any]) -> str:
     if configured:
         return configured
     return os.environ.get("AGENT_ADAPTER_WALLET_ENCRYPTION_KEY", "")
+
+
+def _secrets_encryption_key(config: dict[str, Any]) -> str:
+    configured = str(config.get("adapter", {}).get("secretsEncryptionKey", "") or "")
+    if configured:
+        return configured
+    env_key = os.environ.get("AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY", "")
+    if env_key:
+        return env_key
+    return _wallet_encryption_key(config)
+
+
+async def _legacy_wallet_secret_material(wallet: Any) -> bytes:
+    if hasattr(wallet, "secret_bytes"):
+        return bytes(wallet.secret_bytes)
+    # Legacy runtimes derived secret encryption from wallet signing output.
+    return await wallet.sign_message(b"agent-adapter-encryption-key-derivation")
+
+
+async def _has_persisted_secrets(db: Database) -> bool:
+    cursor = await db.conn.execute("SELECT 1 FROM secrets LIMIT 1")
+    return await cursor.fetchone() is not None
 
 
 def _effective_prompt(default_prompt: str, custom_prompt: str, append_to_default: bool) -> str:
@@ -1173,9 +1198,16 @@ class RuntimeContext:
             await asyncio.sleep(interval)
 
     async def close(self) -> None:
-        await self.drivers.shutdown()
-        await self.handlers.close()
-        await self.db.close()
+        try:
+            await self.drivers.shutdown()
+        finally:
+            try:
+                await self.extensions.shutdown()
+            finally:
+                try:
+                    await self.handlers.close()
+                finally:
+                    await self.db.close()
 
     def _read_prompt_state(self) -> tuple[Path, str, bool, tuple[str, bool, str]]:
         prompt_path = _prompt_path(self.config, self.config_path)
@@ -1213,12 +1245,24 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
             wallet_encryption_key=_wallet_encryption_key(config),
         )
 
-        key_material = (
-            wallet.secret_bytes
-            if hasattr(wallet, "secret_bytes")
-            else await wallet.sign_message(b"agent-adapter-encryption-key-derivation")
-        )
-        secrets = SecretsStore(db, WalletDerivedSecretsBackend(key_material))
+        secrets_encryption_key = _secrets_encryption_key(config)
+        if not secrets_encryption_key:
+            raise ValueError(
+                "Secrets encryption requires adapter.secretsEncryptionKey, "
+                "AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY, adapter.walletEncryptionKey, "
+                "or AGENT_ADAPTER_WALLET_ENCRYPTION_KEY."
+            )
+        secrets_backend = ExternalSecretsBackend(secrets_encryption_key)
+        if await _has_persisted_secrets(db):
+            async def _load_legacy_wallet_key_material() -> bytes:
+                return await _legacy_wallet_secret_material(wallet)
+
+            await migrate_legacy_wallet_secrets(
+                db,
+                legacy_wallet_key_material_loader=_load_legacy_wallet_key_material,
+                target_backend=secrets_backend,
+            )
+        secrets = SecretsStore(db, secrets_backend)
         state = StateStore(db)
         registry, source_hashes = await discover_capabilities(config)
         await sync_capability_overlays(db, registry, source_hashes)

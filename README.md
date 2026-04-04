@@ -289,6 +289,7 @@ env UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest tests.test_runtime_inte
 
 - The dashboard preview uses a local preview wallet plugin, not a real chain wallet.
 - Wallet import from the dashboard updates persisted config and requires a restart to swap the in-memory wallet.
+- Provider secrets are encrypted with an external adapter key (`AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY`), not derived from the active wallet.
 - The buyer-side MPP flow assumes the runtime already has a valid shared payment token.
 - The Stripe-backed MPP implementation follows the documented flow and local tests, but has not been fully validated against a live production Stripe machine-payments setup in this repo.
 
