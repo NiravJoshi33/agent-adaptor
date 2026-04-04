@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from hashlib import sha256
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -42,6 +43,10 @@ class WalletExportRequest(BaseModel):
     token: str = ""
 
 
+class ManagementSessionRequest(BaseModel):
+    token: str = ""
+
+
 def _is_loopback_host(host: str) -> bool:
     normalized = host.strip().lower()
     return normalized in {"127.0.0.1", "localhost", "::1"}
@@ -54,16 +59,32 @@ def _management_token(runtime: RuntimeContext) -> str:
     return os.environ.get("AGENT_ADAPTER_MANAGEMENT_TOKEN", "")
 
 
-def _extract_management_token(request: Request) -> str:
+def _management_session_value(management_token: str) -> str:
+    return hmac.new(
+        management_token.encode(),
+        b"agent-adapter-management-session-v1",
+        sha256,
+    ).hexdigest()
+
+
+def _extract_management_header_token(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     scheme, _, token = auth.partition(" ")
     if scheme.lower() == "bearer" and token:
         return token
-    return (
-        request.headers.get("x-management-token", "")
-        or request.cookies.get("agent_adapter_management_token", "")
-        or request.query_params.get("token", "")
-    )
+    return request.headers.get("x-management-token", "")
+
+
+def _extract_management_session(request: Request) -> str:
+    return request.cookies.get("agent_adapter_management_session", "")
+
+
+def _is_local_management_request(request: Request) -> bool:
+    request_host = request.url.hostname or ""
+    client_host = request.client.host if request.client else ""
+    host_is_loopback = _is_loopback_host(request_host)
+    client_is_loopback = not client_host or _is_loopback_host(client_host)
+    return host_is_loopback and client_is_loopback
 
 
 def create_management_app(runtime: RuntimeContext) -> FastAPI:
@@ -94,25 +115,63 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
             path = request.url.path
             if not (path.startswith("/manage") or path.startswith("/dashboard")):
                 return await call_next(request)
+            if path == "/manage/session":
+                return await call_next(request)
 
-            provided = _extract_management_token(request)
-            if not provided or not hmac.compare_digest(provided, management_token):
+            provided = _extract_management_header_token(request)
+            session = _extract_management_session(request)
+            expected_session = _management_session_value(management_token)
+            if not (
+                provided and hmac.compare_digest(provided, management_token)
+            ) and not (
+                session and hmac.compare_digest(session, expected_session)
+            ):
                 return JSONResponse(
                     {"detail": "Management token required"},
                     status_code=401,
                 )
+            return await call_next(request)
 
-            response = await call_next(request)
-            if request.cookies.get("agent_adapter_management_token") != management_token:
-                response.set_cookie(
-                    "agent_adapter_management_token",
-                    management_token,
-                    httponly=True,
-                    samesite="lax",
-                )
-            return response
+    else:
+        @app.middleware("http")
+        async def require_local_management(request: Request, call_next):
+            path = request.url.path
+            if not (path.startswith("/manage") or path.startswith("/dashboard")):
+                return await call_next(request)
+            if allow_unsafe or _is_local_management_request(request):
+                return await call_next(request)
+            return JSONResponse(
+                {
+                    "detail": (
+                        "Remote management requires adapter.managementToken "
+                        "or allowUnsafeRemoteManagement."
+                    )
+                },
+                status_code=403,
+            )
 
     mount_dashboard(app, runtime)
+
+    @app.post("/manage/session")
+    async def create_management_session(
+        request: ManagementSessionRequest, raw_request: Request
+    ):
+        if not management_token:
+            raise HTTPException(
+                status_code=400,
+                detail="Management session login requires adapter.managementToken",
+            )
+        if not request.token or not hmac.compare_digest(request.token, management_token):
+            raise HTTPException(status_code=401, detail="Management token required")
+        response = JSONResponse({"authenticated": True})
+        response.set_cookie(
+            "agent_adapter_management_session",
+            _management_session_value(management_token),
+            httponly=True,
+            secure=raw_request.url.scheme == "https",
+            samesite="lax",
+        )
+        return response
 
     @app.get("/manage/status")
     async def get_status():

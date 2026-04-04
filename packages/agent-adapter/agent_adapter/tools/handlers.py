@@ -637,13 +637,11 @@ class ToolHandlers:
         job_id = str(args.get("_job_id", "") or "")
         if self._job_engine:
             if job_id:
-                existing = await self._job_engine.get(job_id)
-                if existing is None:
-                    raise ValueError(f"Unknown job: {job_id}")
-                if existing.get("capability") != capability.name:
-                    raise ValueError(
-                        f"Job {job_id} is for capability {existing.get('capability')}, not {capability.name}"
-                    )
+                await self._validate_reused_job(
+                    job_id,
+                    capability_name=capability.name,
+                    input_data=runtime_args,
+                )
             else:
                 job_id = await self._job_engine.create(
                     capability=capability.name,
@@ -651,7 +649,8 @@ class ToolHandlers:
                     payment_amount=self._estimate_payment_amount(capability, runtime_args),
                     payment_currency=capability.pricing.currency,
                 )
-            await self._job_engine.mark_executing(job_id)
+            if not await self._job_engine.mark_executing(job_id):
+                raise ValueError(f"Job {job_id} is no longer pending")
 
         try:
             response = await self._request_http(
@@ -698,13 +697,11 @@ class ToolHandlers:
 
         if self._job_engine:
             if job_id:
-                existing = await self._job_engine.get(job_id)
-                if existing is None:
-                    raise ValueError(f"Unknown job: {job_id}")
-                if existing.get("capability") != capability.name:
-                    raise ValueError(
-                        f"Job {job_id} is for capability {existing.get('capability')}, not {capability.name}"
-                    )
+                await self._validate_reused_job(
+                    job_id,
+                    capability_name=capability.name,
+                    input_data=args,
+                )
             else:
                 job_id = await self._job_engine.create(
                     capability=capability.name,
@@ -712,7 +709,8 @@ class ToolHandlers:
                     payment_amount=self._estimate_payment_amount(capability, args),
                     payment_currency=capability.pricing.currency,
                 )
-            await self._job_engine.mark_executing(job_id)
+            if not await self._job_engine.mark_executing(job_id):
+                raise ValueError(f"Job {job_id} is no longer pending")
 
         try:
             result = await call_mcp_tool(
@@ -919,6 +917,33 @@ class ToolHandlers:
         if not capability.enabled or capability.pricing is None:
             raise ValueError(f"Capability is not enabled and priced: {capability_name}")
         return capability
+
+    async def _validate_reused_job(
+        self,
+        job_id: str,
+        *,
+        capability_name: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self._job_engine is None:
+            raise ValueError("No job engine configured")
+        existing = await self._job_engine.get(job_id)
+        if existing is None:
+            raise ValueError(f"Unknown job: {job_id}")
+        if existing.get("capability") != capability_name:
+            raise ValueError(
+                f"Job {job_id} is for capability {existing.get('capability')}, not {capability_name}"
+            )
+        if existing.get("status") != "pending":
+            raise ValueError(
+                f"Job {job_id} is not pending and cannot be reused (current status: {existing.get('status')})"
+            )
+        input_hash = self._job_engine.hash_payload(input_data)
+        if existing.get("input_hash") != input_hash:
+            raise ValueError(
+                f"Job {job_id} input does not match the capability arguments for {capability_name}"
+            )
+        return existing
 
     async def _sync_job_payment(
         self,

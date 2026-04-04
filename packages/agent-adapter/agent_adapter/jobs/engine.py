@@ -62,12 +62,13 @@ class JobEngine:
         await self._db.conn.commit()
         return job_id
 
-    async def mark_executing(self, job_id: str) -> None:
-        await self._db.conn.execute(
+    async def mark_executing(self, job_id: str) -> bool:
+        cursor = await self._db.conn.execute(
             "UPDATE jobs SET status = 'executing' WHERE id = ? AND status = 'pending'",
             (job_id,),
         )
         await self._db.conn.commit()
+        return bool(cursor.rowcount)
 
     async def mark_completed(
         self,
@@ -209,6 +210,9 @@ class JobEngine:
         )
         row = await cursor.fetchone()
         return row[0] if row else 0.0
+
+    def hash_payload(self, payload: Any) -> str:
+        return self._hash_payload(payload)
 
     def _hash_payload(self, payload: Any) -> str:
         raw = json.dumps(payload, sort_keys=True, default=str).encode()

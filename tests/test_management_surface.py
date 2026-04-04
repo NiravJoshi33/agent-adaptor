@@ -698,6 +698,20 @@ class SignlessWalletPlugin:
 
 
 class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
+    def _make_client(
+        self,
+        *,
+        base_url: str = "http://127.0.0.1",
+        client: tuple[str, int] = ("127.0.0.1", 123),
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=create_management_app(self.runtime),
+                client=client,
+            ),
+            base_url=base_url,
+        )
+
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -706,10 +720,7 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         _write_openapi_spec(self.spec_path)
         _write_config(self.config_path, self.spec_path)
         self.runtime = await create_runtime(self.config_path)
-        self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
-            base_url="http://testserver",
-        )
+        self.client = self._make_client()
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
@@ -735,6 +746,17 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "managementToken"):
             create_management_app(self.runtime)
 
+    async def test_embedded_remote_request_without_token_is_blocked_even_if_config_is_loopback(self) -> None:
+        await self.client.aclose()
+        self.client = self._make_client(
+            base_url="https://dashboard.example",
+            client=("203.0.113.10", 44321),
+        )
+
+        denied = await self.client.get("/manage/status")
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn("Remote management requires", denied.json()["detail"])
+
     async def test_remote_management_token_protects_manage_and_dashboard_routes(self) -> None:
         await self.client.aclose()
         await self.runtime.close()
@@ -752,9 +774,9 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
         self.runtime = await create_runtime(self.config_path)
-        self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
-            base_url="http://testserver",
+        self.client = self._make_client(
+            base_url="https://dashboard.example",
+            client=("203.0.113.10", 44321),
         )
 
         denied = await self.client.get("/manage/status")
@@ -769,7 +791,15 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(allowed.status_code, 200)
 
-        dashboard_allowed = await self.client.get("/dashboard/?token=remote-secret")
+        session = await self.client.post(
+            "/manage/session",
+            json={"token": "remote-secret"},
+        )
+        self.assertEqual(session.status_code, 200)
+        self.assertIn("agent_adapter_management_session=", session.headers["set-cookie"])
+        self.assertNotIn("remote-secret", session.headers["set-cookie"])
+
+        dashboard_allowed = await self.client.get("/dashboard/")
         self.assertEqual(dashboard_allowed.status_code, 200)
 
     async def test_management_api_exposes_and_updates_runtime_state(self) -> None:
@@ -1176,10 +1206,7 @@ paths:
         _write_openapi_spec(self.spec_path)
         _write_config(self.config_path, self.spec_path, include_driver=True)
         self.runtime = await create_runtime(self.config_path)
-        self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
-            base_url="http://testserver",
-        )
+        self.client = self._make_client()
 
         status = (await self.client.get("/manage/status")).json()
         self.assertEqual(status["platform_drivers"][0]["name"], "dummy-driver")
@@ -1234,10 +1261,7 @@ paths:
         ):
             self.runtime = await create_runtime(self.config_path)
         self.runtime.wallet.get_balance = AsyncMock(return_value={"sol": 1.25, "usdc": 0.0})  # type: ignore[method-assign]
-        self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
-            base_url="http://testserver",
-        )
+        self.client = self._make_client()
 
         wallet = (await self.client.get("/manage/wallet")).json()
         self.assertEqual(wallet["address"], str(first_keypair.pubkey()))
@@ -1479,10 +1503,7 @@ paths:
         self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
         self.runtime = await create_runtime(self.config_path)
-        self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
-            base_url="http://testserver",
-        )
+        self.client = self._make_client()
 
         extension = self.runtime.extensions._extensions[0]
         self.assertIsInstance(extension, TestExtension)
@@ -1606,10 +1627,7 @@ paths:
 
         with patch("webhook_notifier.plugin.httpx.AsyncClient.post", new=fake_post):
             self.runtime = await create_runtime(self.config_path)
-            self.client = httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
-                base_url="http://testserver",
-            )
+            self.client = self._make_client()
 
             await self.runtime.handlers.dispatch(
                 "state__set",
@@ -1687,10 +1705,7 @@ paths:
 
         with patch("webhook_notifier.plugin.httpx.AsyncClient.post", new=fake_post):
             self.runtime = await create_runtime(self.config_path)
-            self.client = httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
-                base_url="http://testserver",
-            )
+            self.client = self._make_client()
 
             await self.runtime.whoami()
             await self.runtime.whoami()

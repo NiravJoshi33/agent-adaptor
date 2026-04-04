@@ -823,6 +823,131 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs[0]["platform"], "tasknet")
         self.assertEqual(jobs[0]["platform_ref"], "task-123")
 
+    async def test_reused_job_id_requires_matching_input_hash(self) -> None:
+        registry = CapabilityRegistry()
+        registry.register(
+            Capability(
+                name="get_widget",
+                source="openapi",
+                source_ref="GET /widgets/{widget_id}",
+                description="Get widget",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "widget_id": {"type": "string"},
+                    },
+                    "required": ["widget_id"],
+                },
+                execution={
+                    "type": "http",
+                    "method": "GET",
+                    "path": "/widgets/{widget_id}",
+                    "path_params": ["widget_id"],
+                    "query_params": [],
+                    "header_params": [],
+                    "cookie_params": [],
+                    "body_schema": {},
+                    "body_required": False,
+                },
+                base_url="https://api.example.com",
+                enabled=True,
+                pricing=PricingConfig(model="per_call", amount=0.25),
+            )
+        )
+        http_client = FakeHttpClient(body={"widget": "456"})
+
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            capability_registry=registry,
+            x402_http_client=http_client,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        created = json.loads(
+            await handlers.dispatch(
+                "jobs__create",
+                {"capability": "get_widget", "input": {"widget_id": "123"}},
+            )
+        )
+
+        result = json.loads(
+            await handlers.dispatch(
+                "cap__get_widget",
+                {"widget_id": "456", "_job_id": created["job_id"]},
+            )
+        )
+        self.assertIn("input does not match", result["error"])
+        self.assertEqual(len(http_client.calls), 0)
+        job = await self.job_engine.get(created["job_id"])
+        assert job is not None
+        self.assertEqual(job["status"], "pending")
+
+    async def test_reused_job_id_requires_pending_status(self) -> None:
+        registry = CapabilityRegistry()
+        registry.register(
+            Capability(
+                name="get_widget",
+                source="openapi",
+                source_ref="GET /widgets/{widget_id}",
+                description="Get widget",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "widget_id": {"type": "string"},
+                    },
+                    "required": ["widget_id"],
+                },
+                execution={
+                    "type": "http",
+                    "method": "GET",
+                    "path": "/widgets/{widget_id}",
+                    "path_params": ["widget_id"],
+                    "query_params": [],
+                    "header_params": [],
+                    "cookie_params": [],
+                    "body_schema": {},
+                    "body_required": False,
+                },
+                base_url="https://api.example.com",
+                enabled=True,
+                pricing=PricingConfig(model="per_call", amount=0.25),
+            )
+        )
+        http_client = FakeHttpClient(body={"widget": "123"})
+
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            capability_registry=registry,
+            x402_http_client=http_client,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        created = json.loads(
+            await handlers.dispatch(
+                "jobs__create",
+                {"capability": "get_widget", "input": {"widget_id": "123"}},
+            )
+        )
+        await self.job_engine.mark_executing(created["job_id"])
+        await self.job_engine.mark_completed(created["job_id"], output_hash="done")
+
+        result = json.loads(
+            await handlers.dispatch(
+                "cap__get_widget",
+                {"widget_id": "123", "_job_id": created["job_id"]},
+            )
+        )
+        self.assertIn("is not pending", result["error"])
+        self.assertEqual(len(http_client.calls), 0)
+
     async def test_dynamic_driver_tool_dispatches_and_builds_agent_tools(self) -> None:
         registry = DriverRegistry()
         driver = DummyDriver()
