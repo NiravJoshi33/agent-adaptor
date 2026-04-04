@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from agent_adapter_contracts.runtime import RuntimeAPI
 from agent_adapter_contracts.types import ToolDefinition
 
 
@@ -24,7 +25,7 @@ class PlatformDriver(ABC):
     def tools(self) -> list[ToolDefinition]: ...
 
     @abstractmethod
-    async def initialize(self, runtime: Any) -> None: ...
+    async def initialize(self, runtime: RuntimeAPI) -> None: ...
 
     @abstractmethod
     async def shutdown(self) -> None: ...

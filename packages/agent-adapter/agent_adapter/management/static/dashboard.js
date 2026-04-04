@@ -314,7 +314,7 @@ function renderWallet(wallet) {
                   <div class="capability-subtitle">${escapeHtml(row.platform || "")}</div>
                 </td>
                 <td>${badge(row.status || "pending")}</td>
-                <td><span class="price-pill">${formatMoney(row.payment_amount || 0, row.payment_currency || "USDC")} <span class="muted">(${escapeHtml(row.payment_protocol || "free")})</span></span></td>
+                <td><span class="price-pill">${formatMoney(row.payment_amount || 0, row.payment_currency || "USDC")} <span class="muted">(${escapeHtml(row.payment_protocol || "unassigned")})</span></span></td>
                 <td><span class="muted">${escapeHtml(formatTimestamp(row.completed_at || row.created_at))}</span></td>
               </tr>
             `).join("")}
@@ -388,7 +388,7 @@ function renderMetrics(metrics, series) {
       ? rows.map((row) => `
           <div class="metric-row">
             <div>
-              <strong>${row.payment_protocol}</strong>
+              <strong>${row.payment_protocol || "unassigned"}</strong>
               <div class="muted">${row.jobs} jobs</div>
             </div>
             <div class="metric-value">${formatMoney(row.revenue, "USDC")}</div>
@@ -547,7 +547,7 @@ function renderOperations(operations) {
             <div class="ops-item-header">
               <div>
                 <strong>${job.capability}</strong>
-                <div class="muted">${job.payment_protocol || "free"} / ${formatMoney(job.payment_amount || 0, job.payment_currency || "USDC")}</div>
+                <div class="muted">${job.payment_protocol || "unassigned"} / ${formatMoney(job.payment_amount || 0, job.payment_currency || "USDC")}</div>
               </div>
               <div class="ops-meta">
                 ${badge(job.status || "pending")}

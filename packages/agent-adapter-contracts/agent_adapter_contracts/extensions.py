@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import StrEnum
-from typing import Any, TypeAlias
+from typing import TypeAlias
+
+from agent_adapter_contracts.runtime import RuntimeAPI
 
 
 class RuntimeEvent(StrEnum):
@@ -40,7 +42,7 @@ class Extension(ABC):
     def hooks(self) -> list[ExtensionHook]: ...
 
     @abstractmethod
-    async def initialize(self, runtime: Any) -> None: ...
+    async def initialize(self, runtime: RuntimeAPI) -> None: ...
 
     @abstractmethod
     async def shutdown(self) -> None: ...

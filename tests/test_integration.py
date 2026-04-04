@@ -252,7 +252,11 @@ async def main() -> None:
     print(f"  Created job: {job_id}")
 
     await engine.mark_executing(job_id)
-    await engine.mark_completed(job_id, output_hash="petstore_response_hash")
+    await engine.mark_completed(
+        job_id,
+        output_hash="petstore_response_hash",
+        payment_status="settled",
+    )
     job = await engine.get(job_id)
     assert job["status"] == "completed"
     assert job["payment_status"] == "settled"

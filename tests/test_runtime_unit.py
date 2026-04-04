@@ -640,8 +640,9 @@ class MCPCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         jobs = await job_engine.list_recent(1)
         self.assertEqual(jobs[0]["status"], "completed")
-        self.assertEqual(jobs[0]["payment_protocol"], "free")
+        self.assertEqual(jobs[0]["payment_protocol"], "")
         self.assertEqual(jobs[0]["payment_amount"], 0.2)
+        self.assertEqual(jobs[0]["payment_status"], "pending")
         self.assertEqual(
             [method for method, _, _ in calls],
             [
@@ -743,9 +744,9 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         jobs = await self.job_engine.list_recent(1)
         self.assertEqual(jobs[0]["status"], "completed")
-        self.assertEqual(jobs[0]["payment_protocol"], "x402")
+        self.assertEqual(jobs[0]["payment_protocol"], "")
         self.assertEqual(jobs[0]["payment_amount"], 0.25)
-        self.assertEqual(jobs[0]["payment_status"], "settled")
+        self.assertEqual(jobs[0]["payment_status"], "pending")
 
     async def test_dynamic_driver_tool_dispatches_and_builds_agent_tools(self) -> None:
         registry = DriverRegistry()
@@ -842,6 +843,12 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status_code"], 402)
 
     async def test_pay_mpp_tools_round_trip_session_and_refund(self) -> None:
+        job_id = await self.job_engine.create(
+            capability="get_widget",
+            input_data={"widget_id": "123"},
+            payment_amount=1.0,
+            payment_currency="USD",
+        )
         challenge = {
             "id": "chlg_123",
             "realm": "api.example.com",
@@ -905,17 +912,25 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
                 "amount": 1.0,
                 "session_url": "",
                 "extra": {},
-                "job_id": "job_123",
+                "job_id": job_id,
             },
         )
         opened = json.loads(opened_raw)
         self.assertEqual(opened["adapter_id"], "stripe_mpp")
         self.assertEqual(opened["receipt"]["extra"]["payment_intent_id"], "pi_123")
+        job = await self.job_engine.get(job_id)
+        assert job is not None
+        self.assertEqual(job["payment_protocol"], "stripe_mpp")
+        self.assertEqual(job["payment_status"], "secured")
+        self.assertEqual(job["payment_currency"], "USD")
 
         captured = json.loads(
             await handlers.dispatch("pay_mpp__capture", {"session": opened})
         )
         self.assertEqual(captured["status"], "settled")
+        job = await self.job_engine.get(job_id)
+        assert job is not None
+        self.assertEqual(job["payment_status"], "settled")
 
         refunded = json.loads(
             await handlers.dispatch(
@@ -924,6 +939,9 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(refunded["status"], "refunded")
+        job = await self.job_engine.get(job_id)
+        assert job is not None
+        self.assertEqual(job["payment_status"], "refunded")
 
     async def test_pay_mpp_capture_and_refund_use_session_adapter_id(self) -> None:
         primary = TrackingMPPAdapter("mpp_primary")
@@ -1028,6 +1046,54 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         jobs = await self.job_engine.list_recent(1)
         self.assertEqual(jobs[0]["status"], "failed")
         self.assertEqual(jobs[0]["payment_status"], "pending")
+
+    async def test_schema_changed_capability_is_hidden_and_blocked(self) -> None:
+        registry = CapabilityRegistry()
+        capability = Capability(
+            name="get_widget",
+            source="openapi",
+            source_ref="GET /widgets/{widget_id}",
+            description="Get widget",
+            input_schema={
+                "type": "object",
+                "properties": {"widget_id": {"type": "string"}},
+                "required": ["widget_id"],
+            },
+            execution={
+                "type": "http",
+                "method": "GET",
+                "path": "/widgets/{widget_id}",
+                "path_params": ["widget_id"],
+                "query_params": [],
+                "header_params": [],
+                "cookie_params": [],
+                "body_schema": {},
+                "body_required": False,
+            },
+            base_url="https://api.example.com",
+            enabled=True,
+            pricing=PricingConfig(model="per_call", amount=0.25),
+        )
+        capability.drift_status = "schema_changed"  # type: ignore[attr-defined]
+        registry.register(capability)
+
+        tools = build_tool_list(extra_tools=registry.to_tool_definitions())
+        self.assertFalse(any(t["function"]["name"] == "cap__get_widget" for t in tools))
+
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            capability_registry=registry,
+            plain_http_client=FakeHttpClient(body={"widget": "123"}),
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        raw = await handlers.dispatch("cap__get_widget", {"widget_id": "123"})
+        result = json.loads(raw)
+        self.assertIn("blocked pending provider review", result["error"])
 
     async def test_wallet_sign_transaction_tool_returns_hex_payload(self) -> None:
         handlers = ToolHandlers(

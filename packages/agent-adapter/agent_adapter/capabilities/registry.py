@@ -28,7 +28,11 @@ class CapabilityRegistry:
         return [c for c in self._capabilities.values() if c.enabled]
 
     def list_priced(self) -> list[Capability]:
-        return [c for c in self._capabilities.values() if c.enabled and c.pricing]
+        return [
+            c
+            for c in self._capabilities.values()
+            if c.enabled and c.pricing and self._is_sellable(c)
+        ]
 
     def enable(self, name: str) -> None:
         cap = self._capabilities.get(name)
@@ -56,3 +60,9 @@ class CapabilityRegistry:
                 )
             )
         return tools
+
+    def _is_sellable(self, cap: Capability) -> bool:
+        return getattr(cap, "drift_status", "unchanged") not in {
+            "schema_changed",
+            "stale",
+        }

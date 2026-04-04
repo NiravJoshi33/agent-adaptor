@@ -28,6 +28,24 @@ DEFAULT_SYSTEM_PROMPT = """## Provider Instructions
 """
 
 
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+def _validate_management_bind(config: dict[str, Any]) -> None:
+    dashboard = config.get("adapter", {}).get("dashboard", {})
+    host = str(dashboard.get("bind", "127.0.0.1") or "127.0.0.1")
+    if _is_loopback_host(host):
+        return
+    if bool(config.get("adapter", {}).get("allowUnsafeRemoteManagement", False)):
+        return
+    raise ValueError(
+        "Remote management binds are blocked by default. "
+        "Set adapter.allowUnsafeRemoteManagement: true only when you have external auth/TLS in front of the runtime."
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-adapter")
     parser.add_argument("--config", default="agent-adapter.yaml")
@@ -457,6 +475,7 @@ async def _run_start(args: argparse.Namespace) -> None:
     dashboard = runtime.config.get("adapter", {}).get("dashboard", {})
     host = dashboard.get("bind", "127.0.0.1")
     port = int(dashboard.get("port", 9090))
+    _validate_management_bind(runtime.config)
 
     if args.once:
         try:

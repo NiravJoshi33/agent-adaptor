@@ -478,6 +478,13 @@ class ToolHandlers:
                 else "secured"
             ),
         )
+        await self._sync_job_payment(
+            session.job_id,
+            protocol=adapter.id,
+            status=session.status,
+            amount=receipt.amount,
+            currency=receipt.currency,
+        )
         return self._serialize_payment_session(session)
 
     async def _handle_pay_mpp__capture(self, args: dict) -> dict:
@@ -490,6 +497,13 @@ class ToolHandlers:
         await adapter.settle(session)
         if session.status == previous_status:
             session.status = "settled"
+        await self._sync_job_payment(
+            session.job_id,
+            protocol=session.adapter_id,
+            status=session.status,
+            amount=session.receipt.amount if session.receipt else None,
+            currency=session.receipt.currency if session.receipt else None,
+        )
         return self._serialize_payment_session(session)
 
     async def _handle_pay_mpp__refund(self, args: dict) -> dict:
@@ -500,6 +514,13 @@ class ToolHandlers:
         )
         await adapter.refund(session, str(args.get("reason", "")))
         session.status = "refunded"
+        await self._sync_job_payment(
+            session.job_id,
+            protocol=session.adapter_id,
+            status=session.status,
+            amount=session.receipt.amount if session.receipt else None,
+            currency=session.receipt.currency if session.receipt else None,
+        )
         return self._serialize_payment_session(session)
 
     # ── Escrow payment tools ───────────────────────────────────────
@@ -520,11 +541,19 @@ class ToolHandlers:
         adapter = self._require_payment_adapter("escrow")
         if not hasattr(adapter, "sign_and_submit"):
             raise NotImplementedError("Escrow adapter does not support sign_and_submit")
-        return await adapter.sign_and_submit(
+        result = await adapter.sign_and_submit(
             args["transaction"],
             self._wallet,
             encoding=args.get("encoding", "base64"),
         )
+        await self._sync_job_payment(
+            str(args.get("job_id", "") or ""),
+            protocol=adapter.id,
+            status="secured",
+            amount=float(args.get("amount", 0.0) or 0.0),
+            currency=str(args.get("currency", "USDC") or "USDC"),
+        )
+        return result
 
     async def _handle_pay_escrow__check_status(self, args: dict) -> dict:
         adapter = self._require_payment_adapter("escrow")
@@ -542,6 +571,11 @@ class ToolHandlers:
         capability = self._capability_registry.get(capability_name)
         if capability is None:
             raise ValueError(f"Unknown capability: {capability_name}")
+        drift_status = getattr(capability, "drift_status", "unchanged")
+        if drift_status in {"schema_changed", "stale"}:
+            raise ValueError(
+                f"Capability is blocked pending provider review: {capability_name}"
+            )
         if not capability.enabled or capability.pricing is None:
             raise ValueError(f"Capability is not enabled and priced: {capability_name}")
 
@@ -588,7 +622,6 @@ class ToolHandlers:
             job_id = await self._job_engine.create(
                 capability=capability.name,
                 input_data=args,
-                payment_protocol="x402" if self._x402_http_client else "free",
                 payment_amount=self._estimate_payment_amount(capability, args),
                 payment_currency=capability.pricing.currency,
             )
@@ -607,13 +640,11 @@ class ToolHandlers:
                     await self._job_engine.mark_completed(
                         job_id,
                         output_hash=self._hash_payload(response.get("body")),
-                        payment_status="settled",
                     )
                 else:
                     await self._job_engine.mark_failed(
                         job_id,
                         error=f"HTTP {response['status_code']}",
-                        payment_status="pending",
                     )
             response["capability"] = capability.name
             if job_id:
@@ -621,9 +652,7 @@ class ToolHandlers:
             return response
         except Exception as exc:
             if self._job_engine and job_id:
-                await self._job_engine.mark_failed(
-                    job_id, error=str(exc), payment_status="pending"
-                )
+                await self._job_engine.mark_failed(job_id, error=str(exc))
             raise
 
     async def _handle_driver_tool(
@@ -646,7 +675,6 @@ class ToolHandlers:
             job_id = await self._job_engine.create(
                 capability=capability.name,
                 input_data=args,
-                payment_protocol="free",
                 payment_amount=self._estimate_payment_amount(capability, args),
                 payment_currency=capability.pricing.currency,
             )
@@ -665,13 +693,11 @@ class ToolHandlers:
                     await self._job_engine.mark_failed(
                         job_id,
                         error=self._hash_payload(result.get("raw")),
-                        payment_status="settled",
                     )
                 else:
                     await self._job_engine.mark_completed(
                         job_id,
                         output_hash=self._hash_payload(result.get("raw")),
-                        payment_status="settled",
                     )
             result["capability"] = capability.name
             if job_id:
@@ -679,9 +705,7 @@ class ToolHandlers:
             return result
         except Exception as exc:
             if self._job_engine and job_id:
-                await self._job_engine.mark_failed(
-                    job_id, error=str(exc), payment_status="pending"
-                )
+                await self._job_engine.mark_failed(job_id, error=str(exc))
             raise
 
     async def _request_http(
@@ -846,6 +870,25 @@ class ToolHandlers:
         if adapter_id:
             return self._payments.resolve_by_id(adapter_id)
         return self._payments.resolve(PaymentChallenge(type=challenge_type))
+
+    async def _sync_job_payment(
+        self,
+        job_id: str,
+        *,
+        protocol: str | None = None,
+        status: str | None = None,
+        amount: float | None = None,
+        currency: str | None = None,
+    ) -> None:
+        if not job_id or self._job_engine is None:
+            return
+        await self._job_engine.update_payment(
+            job_id,
+            protocol=protocol,
+            status=status,
+            amount=amount,
+            currency=currency,
+        )
 
     def _serialize_payment_challenge(
         self, challenge: PaymentChallenge

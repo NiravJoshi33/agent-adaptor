@@ -108,7 +108,8 @@ async def _load_openapi_source(
     path = Path(url)
     if path.exists():
         raw = path.read_text()
-        return parse_openapi_spec(raw, base_url=base_url), f"file:{path.stat().st_mtime_ns}"
+        source_hash = hashlib.sha256(raw.encode()).hexdigest()
+        return parse_openapi_spec(raw, base_url=base_url), f"file:{source_hash}"
     return await fetch_and_parse(url, base_url=base_url)
 
 
@@ -222,15 +223,6 @@ async def sync_capability_overlays(
         )
         if row.get("custom_description"):
             cap.description = row["custom_description"]
-        if source_hash and source_hash != row.get("source_hash"):
-            await db.conn.execute(
-                """
-                UPDATE capability_config
-                SET source_hash = ?, updated_at = datetime('now')
-                WHERE name = ?
-                """,
-                (source_hash, cap.name),
-            )
     await db.conn.commit()
 
 
@@ -373,6 +365,7 @@ class RuntimeContext:
         cap = self.registry.get(name)
         if cap is None:
             raise KeyError(name)
+        source_hash = str(getattr(cap, "source_hash", "") or "")
         cap.pricing = PricingConfig(
             model=model,
             amount=amount,
@@ -381,12 +374,13 @@ class RuntimeContext:
             floor=floor,
             ceiling=ceiling,
         )
+        cap.drift_status = "unchanged"  # type: ignore[attr-defined]
         await self.db.conn.execute(
             """
             INSERT INTO capability_config (
                 name, enabled, pricing_amount, pricing_currency, pricing_model,
-                pricing_item_field, pricing_floor, pricing_ceiling, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                pricing_item_field, pricing_floor, pricing_ceiling, source_hash, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(name) DO UPDATE SET
                 pricing_amount = excluded.pricing_amount,
                 pricing_currency = excluded.pricing_currency,
@@ -394,6 +388,7 @@ class RuntimeContext:
                 pricing_item_field = excluded.pricing_item_field,
                 pricing_floor = excluded.pricing_floor,
                 pricing_ceiling = excluded.pricing_ceiling,
+                source_hash = excluded.source_hash,
                 updated_at = datetime('now')
             """,
             (
@@ -405,9 +400,11 @@ class RuntimeContext:
                 item_field,
                 floor,
                 ceiling,
+                source_hash,
             ),
         )
         await self.db.conn.commit()
+        self._agent_loop = None
         return await self.get_capability(name)
 
     async def set_capability_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
@@ -415,17 +412,21 @@ class RuntimeContext:
         if cap is None:
             raise KeyError(name)
         cap.enabled = enabled
+        cap.drift_status = "unchanged"  # type: ignore[attr-defined]
+        source_hash = str(getattr(cap, "source_hash", "") or "")
         await self.db.conn.execute(
             """
-            INSERT INTO capability_config (name, enabled, updated_at)
-            VALUES (?, ?, datetime('now'))
+            INSERT INTO capability_config (name, enabled, source_hash, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
             ON CONFLICT(name) DO UPDATE SET
                 enabled = excluded.enabled,
+                source_hash = excluded.source_hash,
                 updated_at = datetime('now')
             """,
-            (name, 1 if enabled else 0),
+            (name, 1 if enabled else 0, source_hash),
         )
         await self.db.conn.commit()
+        self._agent_loop = None
         return await self.get_capability(name)
 
     async def refresh_capabilities(self) -> list[dict[str, Any]]:
@@ -434,6 +435,7 @@ class RuntimeContext:
         self.registry = registry
         self.handlers._capability_registry = registry
         self.stale_capabilities = await build_stale_capability_records(self.db, registry)
+        self._agent_loop = None
         for cap in self.registry.list_all():
             if "drift_status" not in cap.__dict__:
                 cap.drift_status = "unchanged"  # type: ignore[attr-defined]
@@ -607,7 +609,7 @@ class RuntimeContext:
                 "capability": job["capability"],
                 "platform": job["platform"] or "local runtime",
                 "status": job["status"],
-                "payment_protocol": job.get("payment_protocol") or "free",
+                "payment_protocol": job.get("payment_protocol") or "unassigned",
                 "payment_amount": job.get("payment_amount") or 0.0,
                 "payment_currency": job.get("payment_currency") or "USDC",
                 "created_at": job.get("created_at"),
@@ -1064,7 +1066,7 @@ class RuntimeContext:
             },
             "revenue_by_payment_protocol": [
                 {
-                    "payment_protocol": row["payment_protocol"] or "unknown",
+                    "payment_protocol": row["payment_protocol"] or "unassigned",
                     "jobs": row["jobs"],
                     "revenue": row["revenue"],
                 }

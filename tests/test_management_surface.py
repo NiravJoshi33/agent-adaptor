@@ -144,6 +144,24 @@ def _write_config(
 
 
 class CLITests(unittest.TestCase):
+    def test_remote_management_bind_requires_explicit_unsafe_opt_in(self) -> None:
+        with self.assertRaisesRegex(ValueError, "allowUnsafeRemoteManagement"):
+            cli._validate_management_bind(  # type: ignore[attr-defined]
+                {"adapter": {"dashboard": {"bind": "0.0.0.0", "port": 9090}}}
+            )
+
+        cli._validate_management_bind(  # type: ignore[attr-defined]
+            {"adapter": {"dashboard": {"bind": "127.0.0.1", "port": 9090}}}
+        )
+        cli._validate_management_bind(  # type: ignore[attr-defined]
+            {
+                "adapter": {
+                    "dashboard": {"bind": "0.0.0.0", "port": 9090},
+                    "allowUnsafeRemoteManagement": True,
+                }
+            }
+        )
+
     def test_init_writes_config_database_and_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "agent-adapter.yaml"
@@ -992,6 +1010,26 @@ paths:
         self.assertEqual(by_name["get_report"]["drift_status"], "schema_changed")
         self.assertIn(by_name["get_report"]["status"], {"schema_changed", "disabled"})
         self.assertEqual(by_name["create_export"]["drift_status"], "new")
+        tool_names = {tool.name for tool in self.runtime.registry.to_tool_definitions()}
+        self.assertNotIn("cap__get_report", tool_names)
+
+        reviewed = (
+            await self.client.put(
+                "/manage/capabilities/get_report/pricing",
+                json={
+                    "model": "per_call",
+                    "amount": 0.01,
+                    "currency": "USDC",
+                    "item_field": "",
+                    "floor": 0.0,
+                    "ceiling": 0.0,
+                },
+            )
+        ).json()
+        self.assertEqual(reviewed["drift_status"], "unchanged")
+        self.assertEqual(reviewed["status"], "active")
+        tool_names = {tool.name for tool in self.runtime.registry.to_tool_definitions()}
+        self.assertIn("cap__get_report", tool_names)
 
         self.spec_path.write_text(
             """

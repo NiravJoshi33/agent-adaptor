@@ -207,8 +207,8 @@ class SurfpoolX402FlowTests(unittest.IsolatedAsyncioTestCase):
 
         jobs = await self.job_engine.list_recent(1)
         self.assertEqual(jobs[0]["status"], "completed")
-        self.assertEqual(jobs[0]["payment_protocol"], "x402")
-        self.assertEqual(jobs[0]["payment_status"], "settled")
+        self.assertEqual(jobs[0]["payment_protocol"], "")
+        self.assertEqual(jobs[0]["payment_status"], "pending")
         self.assertEqual(jobs[0]["payment_amount"], 0.005)
 
         provider_after = await get_usdc_balance(

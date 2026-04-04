@@ -234,6 +234,9 @@ class pay_escrow__sign_and_submit(BaseModel):
     encoding: str = Field(
         default="base64", description="Encoding for the transaction: base64 or hex"
     )
+    job_id: str = Field(default="", description="Optional job identifier for payment tracing")
+    amount: float = Field(default=0.0, description="Payment amount in major units when known")
+    currency: str = Field(default="USDC", description="Payment currency")
 
 
 class pay_escrow__check_status(BaseModel):
