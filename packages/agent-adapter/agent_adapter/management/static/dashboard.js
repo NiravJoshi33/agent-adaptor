@@ -580,6 +580,30 @@ async function fetchJSON(url, options = {}) {
   return payload;
 }
 
+function wireLoginControls(nextPath) {
+  const form = document.getElementById("management-login-form");
+  const tokenInput = document.getElementById("management-login-token");
+  const error = document.getElementById("management-login-error");
+  if (!form || !tokenInput || !error) return;
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.hidden = true;
+    error.textContent = "";
+    try {
+      await fetchJSON("/manage/session", {
+        method: "POST",
+        body: JSON.stringify({ token: tokenInput.value || "" }),
+      });
+      tokenInput.value = "";
+      window.location.assign(nextPath || "/dashboard/");
+    } catch (err) {
+      error.hidden = false;
+      error.textContent = err instanceof Error ? err.message : "Login failed";
+    }
+  });
+}
+
 function wireCapabilityControls() {
   document.querySelectorAll("[data-capability]").forEach((row) => {
     const capability = row.getAttribute("data-capability");
@@ -670,6 +694,10 @@ function wireWalletControls() {
 async function init() {
   const data = pageData();
   setActiveNav();
+  if (data.page === "login") {
+    wireLoginControls(data.next || "/dashboard/");
+    return;
+  }
   if (data.page === "overview") {
     renderCapabilities(data.status.capabilities || [], "overview-capabilities");
   }

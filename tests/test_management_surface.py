@@ -783,13 +783,21 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied.status_code, 401)
 
         dashboard_denied = await self.client.get("/dashboard/")
-        self.assertEqual(dashboard_denied.status_code, 401)
+        self.assertEqual(dashboard_denied.status_code, 307)
+        self.assertIn("/dashboard/login?next=%2Fdashboard%2F", dashboard_denied.headers["location"])
+
+        login_page = await self.client.get(dashboard_denied.headers["location"])
+        self.assertEqual(login_page.status_code, 200)
+        self.assertIn("Management Login", login_page.text)
 
         allowed = await self.client.get(
             "/manage/status",
             headers={"x-management-token": "remote-secret"},
         )
         self.assertEqual(allowed.status_code, 200)
+
+        static_allowed = await self.client.get("/dashboard/static/dashboard.css")
+        self.assertEqual(static_allowed.status_code, 200)
 
         session = await self.client.post(
             "/manage/session",

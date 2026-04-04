@@ -6,10 +6,11 @@ import hmac
 import json
 import os
 from hashlib import sha256
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from agent_adapter.management.dashboard import mount_dashboard
 from agent_adapter.runtime import RuntimeContext
@@ -87,6 +88,15 @@ def _is_local_management_request(request: Request) -> bool:
     return host_is_loopback and client_is_loopback
 
 
+def _normalize_dashboard_next(next_path: str) -> str:
+    candidate = next_path or "/dashboard/"
+    if not candidate.startswith("/dashboard"):
+        return "/dashboard/"
+    if candidate.startswith("/dashboard/login"):
+        return "/dashboard/"
+    return candidate
+
+
 def create_management_app(runtime: RuntimeContext) -> FastAPI:
     bind_host = str(
         runtime.config.get("adapter", {}).get("dashboard", {}).get("bind", "127.0.0.1")
@@ -117,6 +127,8 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
                 return await call_next(request)
             if path == "/manage/session":
                 return await call_next(request)
+            if path == "/dashboard/login" or path.startswith("/dashboard/static/"):
+                return await call_next(request)
 
             provided = _extract_management_header_token(request)
             session = _extract_management_session(request)
@@ -126,6 +138,14 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
             ) and not (
                 session and hmac.compare_digest(session, expected_session)
             ):
+                if path.startswith("/dashboard") and request.method in {"GET", "HEAD"}:
+                    next_path = request.url.path
+                    if request.url.query:
+                        next_path = f"{next_path}?{request.url.query}"
+                    redirect_url = "/dashboard/login?" + urlencode(
+                        {"next": _normalize_dashboard_next(next_path)}
+                    )
+                    return RedirectResponse(url=redirect_url, status_code=307)
                 return JSONResponse(
                     {"detail": "Management token required"},
                     status_code=401,

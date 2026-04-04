@@ -75,10 +75,10 @@ class JobEngine:
         job_id: str,
         output_hash: str = "",
         payment_status: str | None = None,
-    ) -> None:
+    ) -> bool:
         now = datetime.now(timezone.utc).isoformat()
         if payment_status is None:
-            await self._db.conn.execute(
+            cursor = await self._db.conn.execute(
                 """
                 UPDATE jobs SET status = 'completed', output_hash = ?,
                     completed_at = ?
@@ -87,7 +87,7 @@ class JobEngine:
                 (output_hash, now, job_id),
             )
         else:
-            await self._db.conn.execute(
+            cursor = await self._db.conn.execute(
                 """
                 UPDATE jobs SET status = 'completed', output_hash = ?,
                     payment_status = ?, completed_at = ?
@@ -96,17 +96,19 @@ class JobEngine:
                 (output_hash, payment_status, now, job_id),
             )
         await self._db.conn.commit()
-        if self._extensions:
+        changed = bool(cursor.rowcount)
+        if changed and self._extensions:
             job = await self.get(job_id)
             if job:
                 await self._extensions.emit(RuntimeEvent.ON_JOB_COMPLETE, job)
+        return changed
 
     async def mark_failed(
         self, job_id: str, error: str = "", payment_status: str | None = None
-    ) -> None:
+    ) -> bool:
         now = datetime.now(timezone.utc).isoformat()
         if payment_status is None:
-            await self._db.conn.execute(
+            cursor = await self._db.conn.execute(
                 """
                 UPDATE jobs SET status = 'failed', output_hash = ?,
                     completed_at = ?
@@ -115,7 +117,7 @@ class JobEngine:
                 (error, now, job_id),
             )
         else:
-            await self._db.conn.execute(
+            cursor = await self._db.conn.execute(
                 """
                 UPDATE jobs SET status = 'failed', output_hash = ?,
                     payment_status = ?, completed_at = ?
@@ -124,10 +126,12 @@ class JobEngine:
                 (error, payment_status, now, job_id),
             )
         await self._db.conn.commit()
-        if self._extensions:
+        changed = bool(cursor.rowcount)
+        if changed and self._extensions:
             job = await self.get(job_id)
             if job:
                 await self._extensions.emit(RuntimeEvent.ON_JOB_FAILED, job)
+        return changed
 
     async def update_payment(
         self,

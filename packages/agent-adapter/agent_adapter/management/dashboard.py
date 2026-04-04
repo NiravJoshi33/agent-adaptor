@@ -112,6 +112,48 @@ def _shell(title: str, body: str, page_data: dict | None = None) -> str:
 def mount_dashboard(app: FastAPI, runtime: RuntimeContext) -> None:
     app.mount("/dashboard/static", StaticFiles(directory=_STATIC_DIR), name="dashboard-static")
 
+    @app.get("/dashboard/login", response_class=HTMLResponse, include_in_schema=False)
+    async def dashboard_login(next: str = "/dashboard/"):
+        next_path = next if next.startswith("/dashboard") else "/dashboard/"
+        if next_path.startswith("/dashboard/login"):
+            next_path = "/dashboard/"
+        body = """
+        <section class="hero compact">
+          <div class="hero-copy">
+            <div class="eyebrow">Protected Dashboard</div>
+            <h2>Sign In</h2>
+            <p>Remote management is enabled for this runtime. Enter the management token to start a browser session for the local control plane.</p>
+          </div>
+          <div class="hero-meta compact">
+            <div class="hero-callout">
+              <span class="label">Access</span>
+              <strong>Browser session only. API routes still require the configured policy.</strong>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h3>Management Login</h3>
+          </div>
+          <form id="management-login-form" class="stack-form">
+            <label class="stack-field">
+              <span>Management Token</span>
+              <input id="management-login-token" name="token" type="password" autocomplete="current-password" placeholder="adapter.managementToken" />
+            </label>
+            <div class="action-row">
+              <button type="submit" class="button">Start session</button>
+              <span class="muted">The token is exchanged for a short browser session cookie.</span>
+            </div>
+            <p id="management-login-error" class="card-foot" hidden></p>
+          </form>
+        </section>
+        """
+        return _shell(
+            "Dashboard Login",
+            body,
+            {"page": "login", "next": next_path},
+        )
+
     @app.get("/dashboard/", response_class=HTMLResponse, include_in_schema=False)
     async def dashboard_overview():
         status = await runtime.whoami()

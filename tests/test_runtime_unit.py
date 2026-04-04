@@ -16,6 +16,7 @@ from agent_adapter.capabilities.mcp import MCP_PROTOCOL_VERSION, fetch_mcp_capab
 from agent_adapter.capabilities.openapi import parse_openapi_spec
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.drivers import DriverRegistry
+from agent_adapter.extensions.registry import ExtensionRegistry
 from agent_adapter.payments import load_payment_registry
 from agent_adapter.plugins.discovery import list_all_plugins
 from agent_adapter.store.database import Database
@@ -372,6 +373,21 @@ class DummyDriver:
 class DummyRuntime:
     def __init__(self) -> None:
         self.config = {"adapter": {"name": "unit-runtime"}}
+
+
+class RecordingJobExtension:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+
+    @property
+    def hooks(self):
+        return [RuntimeEvent.ON_JOB_COMPLETE, RuntimeEvent.ON_JOB_FAILED]
+
+    async def on_job_complete(self, job) -> None:
+        self.events.append((RuntimeEvent.ON_JOB_COMPLETE.value, job["id"]))
+
+    async def on_job_failed(self, job) -> None:
+        self.events.append((RuntimeEvent.ON_JOB_FAILED.value, job["id"]))
 
 
 class OpenAPIParsingTests(unittest.TestCase):
@@ -947,6 +963,32 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("is not pending", result["error"])
         self.assertEqual(len(http_client.calls), 0)
+
+    async def test_job_engine_emits_hooks_only_for_successful_state_transitions(self) -> None:
+        extensions = ExtensionRegistry()
+        recorder = RecordingJobExtension()
+        extensions.register(recorder)
+        engine = JobEngine(self.db, extensions)
+
+        job_id = await engine.create(
+            capability="get_widget",
+            input_data={"widget_id": "123"},
+        )
+        self.assertFalse(await engine.mark_completed(job_id, output_hash="done"))
+        self.assertEqual(recorder.events, [])
+
+        self.assertTrue(await engine.mark_executing(job_id))
+        self.assertTrue(await engine.mark_completed(job_id, output_hash="done"))
+        self.assertEqual(
+            recorder.events,
+            [(RuntimeEvent.ON_JOB_COMPLETE.value, job_id)],
+        )
+
+        self.assertFalse(await engine.mark_failed(job_id, error="boom"))
+        self.assertEqual(
+            recorder.events,
+            [(RuntimeEvent.ON_JOB_COMPLETE.value, job_id)],
+        )
 
     async def test_dynamic_driver_tool_dispatches_and_builds_agent_tools(self) -> None:
         registry = DriverRegistry()
