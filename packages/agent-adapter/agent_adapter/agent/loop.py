@@ -35,6 +35,7 @@ execute them, deliver results, and manage payments — all autonomously.
 - pay_mpp__open_session / pay_mpp__capture / pay_mpp__refund: Work with MPP or Stripe-backed payment sessions when a platform requires credential-based payment flows.
 - pay_escrow__prepare_lock / pay_escrow__sign_and_submit / pay_escrow__check_status: Handle platform-supplied Solana escrow transaction flows.
 - jobs__create: Create a runtime job record after work is accepted so payment and cap__* execution can attach to the same economic unit.
+- jobs__pending: Check what work remains — returns all jobs not yet completed or failed. Call this before finishing to verify nothing is left behind.
 - drv__*: Use optional platform driver tools when installed for complex platform-specific choreography.
 - cap__*: Execute your capabilities against the target service.
 
@@ -44,7 +45,8 @@ execute them, deliver results, and manage payments — all autonomously.
 3. Only sell capabilities listed in status__whoami.capabilities. Anything in blocked_capabilities needs provider review and must not be used for new work.
 4. Never bid below your configured price floor.
 5. After work is accepted, call jobs__create and thread its `_job_id` through payment tools and cap__* execution.
-6. Be concise in platform communications.
+6. Before finishing, call jobs__pending to verify no work remains. Do not stop while jobs are pending or executing.
+7. Be concise in platform communications.
 """
 
 
@@ -63,6 +65,7 @@ class AgentLoop:
         extra_tools: list[ToolDefinition] | None = None,
         usage_recorder: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         client: Any | None = None,
+        completion_check: Callable[[], Awaitable[str | None]] | None = None,
     ) -> None:
         self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
@@ -70,6 +73,7 @@ class AgentLoop:
         self._max_tool_rounds = max_tool_rounds
         self._extra_tools = extra_tools or []
         self._usage_recorder = usage_recorder
+        self._completion_check = completion_check
 
         prompt = system_prompt
         if custom_prompt:
@@ -108,8 +112,18 @@ class AgentLoop:
             # Add assistant message to conversation
             messages.append(message.model_dump(exclude_none=True))
 
-            # If no tool calls, agent is done — return text
+            # If no tool calls, check if actually done
             if not message.tool_calls:
+                # Completion guard: let the runtime veto early termination
+                if self._completion_check:
+                    nudge = await self._completion_check()
+                    if nudge:
+                        logger.info(
+                            "Agent tried to stop at round %d but work remains — continuing",
+                            round_num + 1,
+                        )
+                        messages.append({"role": "user", "content": nudge})
+                        continue
                 logger.info("Agent finished after %d rounds", round_num + 1)
                 return message.content or ""
 

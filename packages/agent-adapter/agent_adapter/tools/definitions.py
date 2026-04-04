@@ -257,6 +257,12 @@ class jobs__create(BaseModel):
     platform_ref: str = Field(default="", description="Optional platform task or contract reference")
 
 
+class jobs__pending(BaseModel):
+    """Returns all jobs that are not yet completed or failed. Use this to check what work remains before stopping. The agent MUST call this before finishing to verify no work is left behind."""
+
+    limit: int = Field(default=20, description="Max number of pending jobs to return")
+
+
 # ── All core tool models ──────────────────────────────────────────────
 
 CORE_TOOL_MODELS: list[type[BaseModel]] = [
@@ -285,6 +291,7 @@ CORE_TOOL_MODELS: list[type[BaseModel]] = [
     pay_escrow__sign_and_submit,
     pay_escrow__check_status,
     jobs__create,
+    jobs__pending,
 ]
 
 

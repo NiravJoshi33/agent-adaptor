@@ -571,6 +571,27 @@ class ToolHandlers:
             raise NotImplementedError("Escrow adapter does not support check_status")
         return await adapter.check_status(args["signature"])
 
+    async def _handle_jobs__pending(self, args: dict) -> dict:
+        if self._job_engine is None:
+            return {"pending": [], "count": 0}
+        limit = args.get("limit", 20)
+        active = await self._job_engine.list_active()
+        jobs = active[:limit]
+        return {
+            "pending": [
+                {
+                    "job_id": j["id"],
+                    "capability": j["capability"],
+                    "status": j["status"],
+                    "platform": j.get("platform", ""),
+                    "platform_ref": j.get("platform_ref", ""),
+                    "created_at": j.get("created_at", ""),
+                }
+                for j in jobs
+            ],
+            "count": len(active),
+        }
+
     async def _handle_jobs__create(self, args: dict) -> dict:
         if self._job_engine is None:
             raise ValueError("No job engine configured")
