@@ -1248,6 +1248,26 @@ def _default_api_key(agent_cfg: dict[str, Any]) -> str:
     return os.environ.get("OPENROUTER_API_KEY", "")
 
 
+def _derive_keypair_from_ows(wallet_config: dict[str, Any]) -> Any:
+    """Get a solders Keypair that matches the OWS wallet's Solana address.
+
+    If the OWS wallet was imported from a raw ed25519 key (via
+    ``import_wallet_private_key``), the config should include
+    ``ed25519_seed_hex`` so we can reconstruct the Keypair.
+    Otherwise returns None — x402 payments will fall back to
+    explicit pay tools.
+    """
+    try:
+        seed_hex = wallet_config.get("ed25519_seed_hex", "")
+        if not seed_hex:
+            return None
+        from solders.keypair import Keypair
+
+        return Keypair.from_seed(bytes.fromhex(seed_hex))
+    except Exception:
+        return None
+
+
 async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> RuntimeContext:
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
@@ -1294,11 +1314,18 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
         payments = load_payment_registry(config.get("payments"), wallet=wallet)
 
         x402_http_client = None
-        if "x402" in payments.list() and hasattr(wallet, "keypair"):
-            from payment_x402.http_client import X402HttpClient
+        if "x402" in payments.list():
+            x402_keypair = None
+            if hasattr(wallet, "keypair"):
+                x402_keypair = wallet.keypair
+            elif wallet_cfg.get("provider") == "ows":
+                # OWS manages keys internally — export for x402 tx signing
+                x402_keypair = _derive_keypair_from_ows(wallet_cfg.get("config", {}))
+            if x402_keypair is not None:
+                from payment_x402.http_client import X402HttpClient
 
-            rpc_url = wallet_cfg.get("config", {}).get("rpc_url", "http://127.0.0.1:8899")
-            x402_http_client = X402HttpClient(keypair=wallet.keypair, rpc_url=rpc_url)
+                rpc_url = wallet_cfg.get("config", {}).get("rpc_url", "http://127.0.0.1:8899")
+                x402_http_client = X402HttpClient(keypair=x402_keypair, rpc_url=rpc_url)
 
         runtime = RuntimeContext(
             config=config,

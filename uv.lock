@@ -11,6 +11,7 @@ members = [
     "payment-free",
     "payment-mpp-stripe",
     "payment-x402",
+    "tool-ops-toolkit",
     "wallet-ows",
     "wallet-solana-raw",
     "webhook-notifier",
@@ -37,6 +38,7 @@ bundled = [
     { name = "payment-free" },
     { name = "payment-mpp-stripe" },
     { name = "payment-x402" },
+    { name = "tool-ops-toolkit" },
     { name = "wallet-ows" },
     { name = "wallet-solana-raw" },
     { name = "webhook-notifier" },
@@ -55,6 +57,7 @@ requires-dist = [
     { name = "payment-mpp-stripe", marker = "extra == 'bundled'", editable = "packages/plugins/payment-mpp-stripe" },
     { name = "payment-x402", marker = "extra == 'bundled'", editable = "packages/plugins/payment-x402" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "tool-ops-toolkit", marker = "extra == 'bundled'", editable = "packages/plugins/tool-ops-toolkit" },
     { name = "uvicorn", specifier = ">=0.34" },
     { name = "wallet-ows", marker = "extra == 'bundled'", editable = "packages/plugins/wallet-ows" },
     { name = "wallet-solana-raw", marker = "extra == 'bundled'", editable = "packages/plugins/wallet-solana-raw" },
@@ -609,6 +612,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cde
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651, upload-time = "2026-03-22T18:29:45.111Z" },
 ]
+
+[[package]]
+name = "tool-ops-toolkit"
+version = "0.1.0"
+source = { editable = "packages/plugins/tool-ops-toolkit" }
+dependencies = [
+    { name = "agent-adapter-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-adapter-contracts", editable = "packages/agent-adapter-contracts" }]
 
 [[package]]
 name = "tqdm"
