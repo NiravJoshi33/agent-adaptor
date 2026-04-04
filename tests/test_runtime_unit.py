@@ -748,6 +748,81 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs[0]["payment_amount"], 0.25)
         self.assertEqual(jobs[0]["payment_status"], "pending")
 
+    async def test_agent_can_create_job_then_execute_capability_against_same_job(self) -> None:
+        registry = CapabilityRegistry()
+        registry.register(
+            Capability(
+                name="get_widget",
+                source="openapi",
+                source_ref="GET /widgets/{widget_id}",
+                description="Get widget",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "widget_id": {"type": "string"},
+                    },
+                    "required": ["widget_id"],
+                },
+                execution={
+                    "type": "http",
+                    "method": "GET",
+                    "path": "/widgets/{widget_id}",
+                    "path_params": ["widget_id"],
+                    "query_params": [],
+                    "header_params": [],
+                    "cookie_params": [],
+                    "body_schema": {},
+                    "body_required": False,
+                },
+                base_url="https://api.example.com",
+                enabled=True,
+                pricing=PricingConfig(model="per_call", amount=0.25),
+            )
+        )
+        http_client = FakeHttpClient(body={"widget": "123"})
+
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            capability_registry=registry,
+            x402_http_client=http_client,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        created = json.loads(
+            await handlers.dispatch(
+                "jobs__create",
+                {
+                    "capability": "get_widget",
+                    "input": {"widget_id": "123"},
+                    "platform": "tasknet",
+                    "platform_ref": "task-123",
+                },
+            )
+        )
+        job_id = created["job_id"]
+
+        result = json.loads(
+            await handlers.dispatch(
+                "cap__get_widget",
+                {"widget_id": "123", "_job_id": job_id},
+            )
+        )
+        self.assertEqual(result["job_id"], job_id)
+        self.assertEqual(len(http_client.calls), 1)
+        _, _, kwargs = http_client.calls[0]
+        self.assertNotIn("_job_id", kwargs["params"])
+
+        jobs = await self.job_engine.list_recent(5)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["id"], job_id)
+        self.assertEqual(jobs[0]["status"], "completed")
+        self.assertEqual(jobs[0]["platform"], "tasknet")
+        self.assertEqual(jobs[0]["platform_ref"], "task-123")
+
     async def test_dynamic_driver_tool_dispatches_and_builds_agent_tools(self) -> None:
         registry = DriverRegistry()
         driver = DummyDriver()
@@ -789,6 +864,7 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pay_mpp__open_session", names)
         self.assertIn("pay_mpp__capture", names)
         self.assertIn("pay_mpp__refund", names)
+        self.assertIn("jobs__create", names)
 
     async def test_pay_x402_check_requirements_reads_unpaid_402_metadata(self) -> None:
         header_payload = base64.b64encode(

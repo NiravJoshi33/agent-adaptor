@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from agent_adapter_contracts.types import Capability, ToolDefinition
 
 
@@ -56,7 +58,7 @@ class CapabilityRegistry:
                 ToolDefinition(
                     name=f"cap__{cap.name}",
                     description=desc,
-                    input_schema=cap.input_schema,
+                    input_schema=self._tool_input_schema(cap),
                 )
             )
         return tools
@@ -66,3 +68,16 @@ class CapabilityRegistry:
             "schema_changed",
             "stale",
         }
+
+    def _tool_input_schema(self, cap: Capability) -> dict:
+        schema = deepcopy(cap.input_schema) if cap.input_schema else {"type": "object"}
+        schema.setdefault("type", "object")
+        properties = schema.setdefault("properties", {})
+        properties["_job_id"] = {
+            "type": "string",
+            "description": (
+                "Optional runtime job identifier returned by jobs__create. "
+                "When provided, this execution is recorded against that existing job."
+            ),
+        }
+        return schema

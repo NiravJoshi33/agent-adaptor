@@ -245,6 +245,18 @@ class pay_escrow__check_status(BaseModel):
     signature: str = Field(description="Submitted transaction signature")
 
 
+# ── Job tools ─────────────────────────────────────────────────────────
+
+
+class jobs__create(BaseModel):
+    """Create a runtime job record before payment or capability execution. Use this after a platform accepts work so later payment and cap__* calls can attach to the same job."""
+
+    capability: str = Field(description="Capability name that will execute for this job")
+    input: dict = Field(default_factory=dict, description="Capability input used for local pricing and job traceability")
+    platform: str = Field(default="", description="Optional platform name")
+    platform_ref: str = Field(default="", description="Optional platform task or contract reference")
+
+
 # ── All core tool models ──────────────────────────────────────────────
 
 CORE_TOOL_MODELS: list[type[BaseModel]] = [
@@ -272,6 +284,7 @@ CORE_TOOL_MODELS: list[type[BaseModel]] = [
     pay_escrow__prepare_lock,
     pay_escrow__sign_and_submit,
     pay_escrow__check_status,
+    jobs__create,
 ]
 
 

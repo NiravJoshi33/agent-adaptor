@@ -34,15 +34,17 @@ execute them, deliver results, and manage payments — all autonomously.
 - pay_x402__check_requirements / pay_x402__execute: Inspect and satisfy x402 payment challenges explicitly when a platform or provider uses HTTP-native paid access.
 - pay_mpp__open_session / pay_mpp__capture / pay_mpp__refund: Work with MPP or Stripe-backed payment sessions when a platform requires credential-based payment flows.
 - pay_escrow__prepare_lock / pay_escrow__sign_and_submit / pay_escrow__check_status: Handle platform-supplied Solana escrow transaction flows.
+- jobs__create: Create a runtime job record after work is accepted so payment and cap__* execution can attach to the same economic unit.
 - drv__*: Use optional platform driver tools when installed for complex platform-specific choreography.
 - cap__*: Execute your capabilities against the target service.
 
 ## Rules
 1. Always call status__whoami first to understand your current state.
 2. Store credentials immediately with secrets__store — never lose an API key.
-3. Match tasks to your enabled, priced capabilities only.
+3. Only sell capabilities listed in status__whoami.capabilities. Anything in blocked_capabilities needs provider review and must not be used for new work.
 4. Never bid below your configured price floor.
-5. Be concise in platform communications.
+5. After work is accepted, call jobs__create and thread its `_job_id` through payment tools and cap__* execution.
+6. Be concise in platform communications.
 """
 
 

@@ -561,27 +561,44 @@ class ToolHandlers:
             raise NotImplementedError("Escrow adapter does not support check_status")
         return await adapter.check_status(args["signature"])
 
+    async def _handle_jobs__create(self, args: dict) -> dict:
+        if self._job_engine is None:
+            raise ValueError("No job engine configured")
+        capability = self._require_sellable_capability(str(args["capability"]))
+        input_data = args.get("input") or {}
+        job_id = await self._job_engine.create(
+            capability=capability.name,
+            input_data=input_data,
+            platform=str(args.get("platform", "") or ""),
+            platform_ref=str(args.get("platform_ref", "") or ""),
+            payment_amount=self._estimate_payment_amount(capability, input_data),
+            payment_currency=capability.pricing.currency,
+        )
+        return {
+            "job_id": job_id,
+            "capability": capability.name,
+            "status": "pending",
+            "payment_amount": self._estimate_payment_amount(capability, input_data),
+            "payment_currency": capability.pricing.currency,
+            "platform": str(args.get("platform", "") or ""),
+            "platform_ref": str(args.get("platform_ref", "") or ""),
+        }
+
     async def _handle_capability_tool(
         self, tool_name: str, args: dict[str, Any]
     ) -> dict[str, Any]:
         capability_name = tool_name.removeprefix("cap__")
-        if self._capability_registry is None:
-            raise ValueError("No capability registry configured")
-
-        capability = self._capability_registry.get(capability_name)
-        if capability is None:
-            raise ValueError(f"Unknown capability: {capability_name}")
-        drift_status = getattr(capability, "drift_status", "unchanged")
-        if drift_status in {"schema_changed", "stale"}:
-            raise ValueError(
-                f"Capability is blocked pending provider review: {capability_name}"
-            )
-        if not capability.enabled or capability.pricing is None:
-            raise ValueError(f"Capability is not enabled and priced: {capability_name}")
+        capability = self._require_sellable_capability(capability_name)
+        reserved_keys = {"_job_id"}
+        runtime_args = {k: v for k, v in args.items() if k not in reserved_keys}
 
         plan = capability.execution
         if plan.get("type") == "mcp":
-            return await self._execute_mcp_capability(capability, args)
+            return await self._execute_mcp_capability(
+                capability,
+                runtime_args,
+                job_id=str(args.get("_job_id", "") or ""),
+            )
         if plan.get("type") != "http":
             raise NotImplementedError(
                 f"Capability execution is not implemented for source {capability.source}"
@@ -589,26 +606,26 @@ class ToolHandlers:
 
         path = plan.get("path", "")
         for name in plan.get("path_params", []):
-            if name not in args:
+            if name not in runtime_args:
                 raise ValueError(f"Missing required path parameter: {name}")
-            path = path.replace("{" + name + "}", quote(str(args[name]), safe=""))
+            path = path.replace("{" + name + "}", quote(str(runtime_args[name]), safe=""))
 
         query_params = {
-            name: str(args[name])
+            name: str(runtime_args[name])
             for name in plan.get("query_params", [])
-            if name in args and args[name] is not None
+            if name in runtime_args and runtime_args[name] is not None
         }
         headers = {
-            name: str(args[name])
+            name: str(runtime_args[name])
             for name in plan.get("header_params", [])
-            if name in args and args[name] is not None
+            if name in runtime_args and runtime_args[name] is not None
         }
 
         handled_keys = set(plan.get("path_params", []))
         handled_keys.update(plan.get("query_params", []))
         handled_keys.update(plan.get("header_params", []))
         handled_keys.update(plan.get("cookie_params", []))
-        remaining = {k: v for k, v in args.items() if k not in handled_keys}
+        remaining = {k: v for k, v in runtime_args.items() if k not in handled_keys}
 
         body = None
         if plan.get("body_schema"):
@@ -617,14 +634,23 @@ class ToolHandlers:
                 raise ValueError("Capability requires a request body")
 
         url = self._build_capability_url(capability.base_url, path)
-        job_id = None
+        job_id = str(args.get("_job_id", "") or "")
         if self._job_engine:
-            job_id = await self._job_engine.create(
-                capability=capability.name,
-                input_data=args,
-                payment_amount=self._estimate_payment_amount(capability, args),
-                payment_currency=capability.pricing.currency,
-            )
+            if job_id:
+                existing = await self._job_engine.get(job_id)
+                if existing is None:
+                    raise ValueError(f"Unknown job: {job_id}")
+                if existing.get("capability") != capability.name:
+                    raise ValueError(
+                        f"Job {job_id} is for capability {existing.get('capability')}, not {capability.name}"
+                    )
+            else:
+                job_id = await self._job_engine.create(
+                    capability=capability.name,
+                    input_data=runtime_args,
+                    payment_amount=self._estimate_payment_amount(capability, runtime_args),
+                    payment_currency=capability.pricing.currency,
+                )
             await self._job_engine.mark_executing(job_id)
 
         try:
@@ -663,21 +689,29 @@ class ToolHandlers:
         return await self._driver_registry.execute(tool_name, args)
 
     async def _execute_mcp_capability(
-        self, capability: Any, args: dict[str, Any]
+        self, capability: Any, args: dict[str, Any], *, job_id: str = ""
     ) -> dict[str, Any]:
         plan = capability.execution
         server_url = plan.get("server_url", "")
         if not server_url:
             raise ValueError("MCP capability is missing a server_url")
 
-        job_id = None
         if self._job_engine:
-            job_id = await self._job_engine.create(
-                capability=capability.name,
-                input_data=args,
-                payment_amount=self._estimate_payment_amount(capability, args),
-                payment_currency=capability.pricing.currency,
-            )
+            if job_id:
+                existing = await self._job_engine.get(job_id)
+                if existing is None:
+                    raise ValueError(f"Unknown job: {job_id}")
+                if existing.get("capability") != capability.name:
+                    raise ValueError(
+                        f"Job {job_id} is for capability {existing.get('capability')}, not {capability.name}"
+                    )
+            else:
+                job_id = await self._job_engine.create(
+                    capability=capability.name,
+                    input_data=args,
+                    payment_amount=self._estimate_payment_amount(capability, args),
+                    payment_currency=capability.pricing.currency,
+                )
             await self._job_engine.mark_executing(job_id)
 
         try:
@@ -870,6 +904,21 @@ class ToolHandlers:
         if adapter_id:
             return self._payments.resolve_by_id(adapter_id)
         return self._payments.resolve(PaymentChallenge(type=challenge_type))
+
+    def _require_sellable_capability(self, capability_name: str) -> Any:
+        if self._capability_registry is None:
+            raise ValueError("No capability registry configured")
+        capability = self._capability_registry.get(capability_name)
+        if capability is None:
+            raise ValueError(f"Unknown capability: {capability_name}")
+        drift_status = getattr(capability, "drift_status", "unchanged")
+        if drift_status in {"schema_changed", "stale"}:
+            raise ValueError(
+                f"Capability is blocked pending provider review: {capability_name}"
+            )
+        if not capability.enabled or capability.pricing is None:
+            raise ValueError(f"Capability is not enabled and priced: {capability_name}")
+        return capability
 
     async def _sync_job_payment(
         self,

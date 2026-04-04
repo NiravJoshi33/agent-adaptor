@@ -324,6 +324,13 @@ class RuntimeContext:
         earnings = await self.job_engine.earnings_today()
         balances = await self.wallet.get_balance()
         low_balance = await self.check_low_balance(balances=balances)
+        all_capabilities = await self.list_capabilities()
+        sellable_capabilities = [
+            cap for cap in all_capabilities if cap.get("status") == "active"
+        ]
+        blocked_capabilities = [
+            cap for cap in all_capabilities if cap.get("status") != "active"
+        ]
         return {
             "adapter_name": self.config.get("adapter", {}).get("name", "agent-adapter"),
             "wallet": await self.wallet.get_address(),
@@ -331,7 +338,9 @@ class RuntimeContext:
             "low_balance": low_balance,
             "registered_platforms": await self.list_platforms(),
             "platform_drivers": await self.list_drivers(),
-            "capabilities": await self.list_capabilities(),
+            "capabilities": sellable_capabilities,
+            "blocked_capabilities": blocked_capabilities,
+            "all_capabilities": all_capabilities,
             "active_jobs": len(active_jobs),
             "jobs_completed_today": (await self.job_engine.count_today()).get(
                 "completed", 0

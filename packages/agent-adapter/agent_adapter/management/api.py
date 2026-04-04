@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 
 from agent_adapter.management.dashboard import mount_dashboard
 from agent_adapter.runtime import RuntimeContext
@@ -40,13 +42,76 @@ class WalletExportRequest(BaseModel):
     token: str = ""
 
 
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+def _management_token(runtime: RuntimeContext) -> str:
+    configured = str(runtime.config.get("adapter", {}).get("managementToken", "") or "")
+    if configured:
+        return configured
+    return os.environ.get("AGENT_ADAPTER_MANAGEMENT_TOKEN", "")
+
+
+def _extract_management_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        return token
+    return (
+        request.headers.get("x-management-token", "")
+        or request.cookies.get("agent_adapter_management_token", "")
+        or request.query_params.get("token", "")
+    )
+
+
 def create_management_app(runtime: RuntimeContext) -> FastAPI:
+    bind_host = str(
+        runtime.config.get("adapter", {}).get("dashboard", {}).get("bind", "127.0.0.1")
+        or "127.0.0.1"
+    )
+    allow_unsafe = bool(
+        runtime.config.get("adapter", {}).get("allowUnsafeRemoteManagement", False)
+    )
+    management_token = _management_token(runtime)
+    if not _is_loopback_host(bind_host) and not management_token and not allow_unsafe:
+        raise ValueError(
+            "Remote management requires adapter.managementToken "
+            "(or AGENT_ADAPTER_MANAGEMENT_TOKEN), unless allowUnsafeRemoteManagement is explicitly enabled."
+        )
+
     app = FastAPI(
         title="Agent Adapter Management API",
         version="0.1.0",
         docs_url="/manage/docs",
         openapi_url="/manage/openapi.json",
     )
+
+    if management_token:
+        @app.middleware("http")
+        async def require_management_token(request: Request, call_next):
+            path = request.url.path
+            if not (path.startswith("/manage") or path.startswith("/dashboard")):
+                return await call_next(request)
+
+            provided = _extract_management_token(request)
+            if not provided or not hmac.compare_digest(provided, management_token):
+                return JSONResponse(
+                    {"detail": "Management token required"},
+                    status_code=401,
+                )
+
+            response = await call_next(request)
+            if request.cookies.get("agent_adapter_management_token") != management_token:
+                response.set_cookie(
+                    "agent_adapter_management_token",
+                    management_token,
+                    httponly=True,
+                    samesite="lax",
+                )
+            return response
+
     mount_dashboard(app, runtime)
 
     @app.get("/manage/status")

@@ -38,11 +38,15 @@ def _validate_management_bind(config: dict[str, Any]) -> None:
     host = str(dashboard.get("bind", "127.0.0.1") or "127.0.0.1")
     if _is_loopback_host(host):
         return
+    if str(config.get("adapter", {}).get("managementToken", "") or ""):
+        return
+    if os.environ.get("AGENT_ADAPTER_MANAGEMENT_TOKEN", ""):
+        return
     if bool(config.get("adapter", {}).get("allowUnsafeRemoteManagement", False)):
         return
     raise ValueError(
         "Remote management binds are blocked by default. "
-        "Set adapter.allowUnsafeRemoteManagement: true only when you have external auth/TLS in front of the runtime."
+        "Set adapter.managementToken (or AGENT_ADAPTER_MANAGEMENT_TOKEN), or explicitly enable allowUnsafeRemoteManagement only when external auth/TLS is already in front of the runtime."
     )
 
 

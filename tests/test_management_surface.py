@@ -157,6 +157,14 @@ class CLITests(unittest.TestCase):
             {
                 "adapter": {
                     "dashboard": {"bind": "0.0.0.0", "port": 9090},
+                    "managementToken": "remote-secret",
+                }
+            }
+        )
+        cli._validate_management_bind(  # type: ignore[attr-defined]
+            {
+                "adapter": {
+                    "dashboard": {"bind": "0.0.0.0", "port": 9090},
                     "allowUnsafeRemoteManagement": True,
                 }
             }
@@ -708,6 +716,62 @@ class ManagementAPITests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.close()
         self.tmp.cleanup()
 
+    async def test_remote_management_app_requires_token_or_explicit_unsafe_mode(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+        config = yaml.safe_load(self.config_path.read_text())
+        config["adapter"]["dashboard"]["bind"] = "0.0.0.0"
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        self.runtime = await create_runtime(self.config_path)
+        with self.assertRaisesRegex(ValueError, "managementToken"):
+            create_management_app(self.runtime)
+
+    async def test_remote_management_token_protects_manage_and_dashboard_routes(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+        config = yaml.safe_load(self.config_path.read_text())
+        config["adapter"]["dashboard"]["bind"] = "0.0.0.0"
+        config["adapter"]["managementToken"] = "remote-secret"
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        self.runtime = await create_runtime(self.config_path)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_management_app(self.runtime)),
+            base_url="http://testserver",
+        )
+
+        denied = await self.client.get("/manage/status")
+        self.assertEqual(denied.status_code, 401)
+
+        dashboard_denied = await self.client.get("/dashboard/")
+        self.assertEqual(dashboard_denied.status_code, 401)
+
+        allowed = await self.client.get(
+            "/manage/status",
+            headers={"x-management-token": "remote-secret"},
+        )
+        self.assertEqual(allowed.status_code, 200)
+
+        dashboard_allowed = await self.client.get("/dashboard/?token=remote-secret")
+        self.assertEqual(dashboard_allowed.status_code, 200)
+
     async def test_management_api_exposes_and_updates_runtime_state(self) -> None:
         status = (await self.client.get("/manage/status")).json()
         self.assertEqual(status["wallet"], "cli-wallet")
@@ -1010,6 +1074,12 @@ paths:
         self.assertEqual(by_name["get_report"]["drift_status"], "schema_changed")
         self.assertIn(by_name["get_report"]["status"], {"schema_changed", "disabled"})
         self.assertEqual(by_name["create_export"]["drift_status"], "new")
+        status = (await self.client.get("/manage/status")).json()
+        self.assertEqual([cap["name"] for cap in status["capabilities"]], [])
+        self.assertIn(
+            "get_report",
+            {cap["name"] for cap in status["blocked_capabilities"]},
+        )
         tool_names = {tool.name for tool in self.runtime.registry.to_tool_definitions()}
         self.assertNotIn("cap__get_report", tool_names)
 
