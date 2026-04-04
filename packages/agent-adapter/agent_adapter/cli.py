@@ -189,6 +189,10 @@ def _write_init_files(args: argparse.Namespace) -> dict[str, Any]:
         "config": str(config_path),
         "database": str(data_dir / "adapter.db"),
         "prompt": str(prompt_path),
+        "required_env": [
+            "AGENT_ADAPTER_WALLET_ENCRYPTION_KEY",
+            "AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY",
+        ],
     }
 
 

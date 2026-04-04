@@ -164,6 +164,13 @@ class CLITests(unittest.TestCase):
             self.assertTrue(config_path.exists())
             self.assertTrue(Path(payload["database"]).exists())
             self.assertTrue(Path(payload["prompt"]).exists())
+            self.assertEqual(
+                payload["required_env"],
+                [
+                    "AGENT_ADAPTER_WALLET_ENCRYPTION_KEY",
+                    "AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY",
+                ],
+            )
             config = yaml.safe_load(config_path.read_text())
             self.assertEqual(
                 config["adapter"]["secretsEncryptionKey"],
@@ -1251,6 +1258,50 @@ paths:
             await runtime.close()
 
         self.assertEqual(restored, "legacy-secret")
+
+    async def test_create_runtime_quarantines_unreadable_legacy_secrets(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+
+        db = Database(self.root / "data" / "adapter.db")
+        await db.connect()
+        try:
+            unreadable_store = SecretsStore(
+                db,
+                WalletDerivedSecretsBackend(b"\x44" * 64),
+            )
+            await unreadable_store.store("tasknet", "broken_key", "legacy-secret")
+        finally:
+            await db.close()
+
+        runtime = await create_runtime(self.config_path)
+        try:
+            restored = await runtime.secrets.retrieve("tasknet", "broken_key")
+            cursor = await runtime.db.conn.execute(
+                """
+                SELECT platform, key, error
+                FROM secret_migration_failures
+                WHERE platform = ? AND key = ?
+                """,
+                ("tasknet", "broken_key"),
+            )
+            failure_row = await cursor.fetchone()
+        finally:
+            await runtime.close()
+
+        self.assertIsNone(restored)
+        self.assertIsNotNone(failure_row)
+        assert failure_row is not None
+        self.assertEqual(failure_row[0], "tasknet")
+        self.assertEqual(failure_row[1], "broken_key")
 
     async def test_generated_solana_wallet_requires_external_encryption_key(self) -> None:
         await self.client.aclose()

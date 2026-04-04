@@ -246,6 +246,14 @@ Initialize a fresh runtime:
 uv run agent-adapter --config ./agent-adapter.yaml init --adapter-name my-agent --data-dir ./runtime-data
 ```
 
+Before first start, set the encryption env vars that `init` places in the config:
+
+```bash
+export AGENT_ADAPTER_WALLET_ENCRYPTION_KEY=replace-with-wallet-key
+export AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=replace-with-secrets-key
+uv run agent-adapter --config ./agent-adapter.yaml start --api-only
+```
+
 ## Example Story
 
 The intended product flow is:

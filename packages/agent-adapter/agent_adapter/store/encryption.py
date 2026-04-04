@@ -62,7 +62,7 @@ async def migrate_legacy_wallet_secrets(
     *,
     legacy_wallet_key_material_loader: Callable[[], Awaitable[bytes]],
     target_backend: SecretsBackend,
-) -> int:
+) -> dict[str, int]:
     """Re-encrypt legacy wallet-derived secrets with the configured external key."""
     legacy_backend: WalletDerivedSecretsBackend | None = None
     cursor = await db.conn.execute(
@@ -70,6 +70,7 @@ async def migrate_legacy_wallet_secrets(
     )
     rows = await cursor.fetchall()
     migrated = 0
+    quarantined = 0
     for platform, key, encrypted_value in rows:
         try:
             await target_backend.decrypt(encrypted_value)
@@ -77,11 +78,28 @@ async def migrate_legacy_wallet_secrets(
         except Exception:
             pass
 
-        if legacy_backend is None:
-            legacy_backend = WalletDerivedSecretsBackend(
-                await legacy_wallet_key_material_loader()
+        try:
+            if legacy_backend is None:
+                legacy_backend = WalletDerivedSecretsBackend(
+                    await legacy_wallet_key_material_loader()
+                )
+            plaintext = await legacy_backend.decrypt(encrypted_value)
+        except Exception as exc:
+            await db.conn.execute(
+                """
+                INSERT INTO secret_migration_failures (
+                    platform, key, encrypted_value, error, created_at
+                ) VALUES (?, ?, ?, ?, datetime('now'))
+                """,
+                (platform, key, encrypted_value, str(exc)),
             )
-        plaintext = await legacy_backend.decrypt(encrypted_value)
+            await db.conn.execute(
+                "DELETE FROM secrets WHERE platform = ? AND key = ?",
+                (platform, key),
+            )
+            quarantined += 1
+            continue
+
         reencrypted = await target_backend.encrypt(plaintext)
         await db.conn.execute(
             """
@@ -93,6 +111,6 @@ async def migrate_legacy_wallet_secrets(
         )
         migrated += 1
 
-    if migrated:
+    if migrated or quarantined:
         await db.conn.commit()
-    return migrated
+    return {"migrated": migrated, "quarantined": quarantined}

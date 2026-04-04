@@ -22,6 +22,15 @@ CREATE TABLE IF NOT EXISTS secrets (
     PRIMARY KEY (platform, key)
 );
 
+CREATE TABLE IF NOT EXISTS secret_migration_failures (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform        TEXT NOT NULL,
+    key             TEXT NOT NULL,
+    encrypted_value BLOB NOT NULL,
+    error           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS state (
     namespace   TEXT NOT NULL,
     key         TEXT NOT NULL,
