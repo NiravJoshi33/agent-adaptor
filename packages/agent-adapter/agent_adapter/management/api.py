@@ -313,6 +313,10 @@ def create_management_app(runtime: RuntimeContext) -> FastAPI:
     async def list_drivers():
         return {"drivers": await runtime.list_drivers()}
 
+    @app.get("/manage/tools")
+    async def list_tool_plugins():
+        return {"tools": await runtime.list_tool_plugins()}
+
     @app.get("/manage/agent/decisions")
     async def list_decisions(limit: int = 50):
         return {"decisions": await runtime.list_decisions(limit)}

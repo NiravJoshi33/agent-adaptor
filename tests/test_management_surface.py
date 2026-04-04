@@ -22,11 +22,12 @@ from agent_adapter.management import create_management_app
 from agent_adapter.runtime import create_runtime
 from agent_adapter.extensions import load_extensions
 from agent_adapter.payments import load_payment_registry
+from agent_adapter.tool_plugins import load_tool_plugins
 from agent_adapter.store.database import Database
 from agent_adapter.store.encryption import WalletDerivedSecretsBackend
 from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.wallet.loader import load_wallet
-from tests.dummy_plugins import DummyWalletPlugin
+from tests.dummy_plugins import DummyToolPlugin, DummyWalletPlugin
 
 sys.modules.setdefault("test_management_surface", sys.modules[__name__])
 sys.modules.setdefault("tests.test_management_surface", sys.modules[__name__])
@@ -63,11 +64,23 @@ paths:
     )
 
 
+def _ops_toolkit_plugin_path() -> Path:
+    return (
+        Path(__file__).resolve().parent.parent
+        / "packages"
+        / "plugins"
+        / "tool-ops-toolkit"
+        / "tool_ops_toolkit"
+        / "plugin.py"
+    )
+
+
 def _write_config(
     path: Path,
     spec_path: Path,
     *,
     include_driver: bool = False,
+    include_tool: bool = False,
     include_webhook_extension: bool = False,
     wallet_provider: str = "dummy",
     wallet_config: dict | None = None,
@@ -123,6 +136,14 @@ def _write_config(
                 "module": "tests.dummy_plugins",
                 "class_name": "DummyPlatformDriver",
                 "config": {"label": "TaskNet Driver"},
+            }
+        ]
+    if include_tool:
+        config["tools"] = [
+            {
+                "module": "tests.dummy_plugins",
+                "class_name": "DummyToolPlugin",
+                "config": {"label": "Task Tool"},
             }
         ]
     if include_webhook_extension:
@@ -537,6 +558,9 @@ class CLITests(unittest.TestCase):
                 "agent_adapter.drivers": [
                     FakeEntryPoint("custom-driver", "tests.dummy_plugins:DummyPlatformDriver")
                 ],
+                "agent_adapter.tools": [
+                    FakeEntryPoint("custom-tool", "tests.dummy_plugins:DummyToolPlugin")
+                ],
             }
         )
 
@@ -549,6 +573,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(payload["payment"][0]["id"], "custom-pay")
         self.assertEqual(payload["extension"][0]["id"], "custom-ext")
         self.assertEqual(payload["driver"][0]["id"], "custom-driver")
+        self.assertEqual(payload["tool"][0]["id"], "custom-tool")
 
     def test_cli_drivers_list_reports_configured_driver(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -641,6 +666,98 @@ class FileDriver(PlatformDriver):
 
             config = yaml.safe_load(config_path.read_text())
             self.assertNotIn("drivers", config)
+
+    def test_cli_tools_list_reports_configured_tool_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "openapi.yaml"
+            config_path = root / "agent-adapter.yaml"
+            _write_openapi_spec(spec_path)
+            _write_config(config_path, spec_path, include_tool=True)
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "tools", "list"])
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["tools"][0]["name"], "dummy-tool-plugin")
+            self.assertEqual(payload["tools"][0]["namespace"], "tool_dummy")
+
+    def test_cli_tools_install_and_remove_support_local_tool_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec_path = root / "openapi.yaml"
+            config_path = root / "agent-adapter.yaml"
+            tool_path = root / "file_tool.py"
+            _write_openapi_spec(spec_path)
+            _write_config(config_path, spec_path)
+            tool_path.write_text(
+                """
+from agent_adapter_contracts.tool_plugins import ToolPlugin
+from agent_adapter_contracts.types import ToolDefinition
+
+
+class FileToolPlugin(ToolPlugin):
+    @property
+    def name(self) -> str:
+        return "file-tool-plugin"
+
+    @property
+    def namespace(self) -> str:
+        return "tool_file"
+
+    @property
+    def tools(self) -> list[ToolDefinition]:
+        return [
+            ToolDefinition(
+                name="tool_file__echo",
+                description="Echo through a file-backed tool plugin.",
+                input_schema={"type": "object", "properties": {}, "required": []},
+            )
+        ]
+
+    async def initialize(self, runtime) -> None:
+        self.runtime = runtime
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def execute(self, tool_name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"ok": True, "tool": tool_name}
+"""
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(
+                    [
+                        "--config",
+                        str(config_path),
+                        "tools",
+                        "install",
+                        str(tool_path),
+                    ]
+                )
+            installed = json.loads(stdout.getvalue())
+            self.assertTrue(installed["installed"])
+            self.assertEqual(installed["mode"], "file")
+            self.assertEqual(installed["class_name"], "FileToolPlugin")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "tools", "list"])
+            listed = json.loads(stdout.getvalue())
+            self.assertEqual(listed["tools"][0]["name"], "file-tool-plugin")
+            self.assertEqual(listed["tools"][0]["tools"], ["tool_file__echo"])
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                cli.app(["--config", str(config_path), "tools", "remove", "1"])
+            removed = json.loads(stdout.getvalue())
+            self.assertTrue(removed["removed"])
+            self.assertEqual(removed["index"], 1)
+
+            config = yaml.safe_load(config_path.read_text())
+            self.assertNotIn("tools", config)
 
 
 class TestExtension:
@@ -1183,6 +1300,9 @@ paths:
                 "agent_adapter.extensions": [
                     FakeEntryPoint("test-ext", "tests.test_management_surface:TestExtension")
                 ],
+                "agent_adapter.tools": [
+                    FakeEntryPoint("test-tool", "tests.dummy_plugins:DummyToolPlugin")
+                ],
             }
         )
 
@@ -1201,6 +1321,13 @@ paths:
             self.assertEqual(len(extensions._extensions), 1)
             self.assertIsInstance(extensions._extensions[0], TestExtension)
             self.assertIs(extensions._extensions[0].runtime, self.runtime)
+
+            tool_plugins = await load_tool_plugins(
+                [{"id": "test-tool"}],
+                runtime=self.runtime,
+            )
+            self.assertEqual(len(tool_plugins.list_plugins()), 1)
+            self.assertEqual(tool_plugins.list_plugins()[0]["name"], "dummy-tool-plugin")
 
     async def test_runtime_can_load_and_execute_configured_driver_tools(self) -> None:
         await self.client.aclose()
@@ -1238,6 +1365,137 @@ paths:
         assert agent is not None
         self.assertIn(
             "drv_dummy__register",
+            [tool.name for tool in agent._extra_tools],
+        )
+
+    async def test_runtime_can_load_and_execute_configured_tool_plugins(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path, include_tool=True)
+        self.runtime = await create_runtime(self.config_path)
+        self.client = self._make_client()
+
+        status = (await self.client.get("/manage/status")).json()
+        self.assertEqual(status["agent_tool_plugins"][0]["name"], "dummy-tool-plugin")
+
+        tools = (await self.client.get("/manage/tools")).json()["tools"]
+        self.assertEqual(tools[0]["tools"], ["tool_dummy__echo"])
+
+        result = json.loads(
+            await self.runtime.handlers.dispatch(
+                "tool_dummy__echo",
+                {"value": "hello"},
+            )
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["label"], "Task Tool")
+        self.assertEqual(result["tool"], "tool_dummy__echo")
+
+        agent = await self.runtime.ensure_agent_loop()
+        assert agent is not None
+        self.assertIn(
+            "tool_dummy__echo",
+            [tool.name for tool in agent._extra_tools],
+        )
+
+    async def test_runtime_can_load_packaged_ops_toolkit_plugin_and_run_example_tools(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(self.config_path, self.spec_path)
+
+        config = yaml.safe_load(self.config_path.read_text())
+        config["tools"] = [
+            {
+                "module": str(_ops_toolkit_plugin_path()),
+                "class_name": "OpsToolkitPlugin",
+                "config": {"default_job_limit": 6, "default_capability_limit": 6},
+            }
+        ]
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        self.runtime = await create_runtime(self.config_path)
+        self.client = self._make_client()
+
+        completed_job = await self.runtime.job_engine.create(
+            capability="get_report",
+            input_data={"report_id": "ops-1"},
+            payment_protocol="x402",
+            payment_amount=0.25,
+        )
+        await self.runtime.job_engine.mark_executing(completed_job)
+        await self.runtime.job_engine.mark_completed(completed_job, output_hash="done")
+
+        failed_job = await self.runtime.job_engine.create(
+            capability="get_report",
+            input_data={"report_id": "ops-2"},
+            payment_protocol="free",
+            payment_amount=0.0,
+        )
+        await self.runtime.job_engine.mark_failed(failed_job, error="upstream timeout")
+
+        pending_job = await self.runtime.job_engine.create(
+            capability="get_report",
+            input_data={"report_id": "ops-3"},
+            payment_protocol="mpp",
+            payment_amount=0.15,
+        )
+
+        status = (await self.client.get("/manage/status")).json()
+        self.assertEqual(status["agent_tool_plugins"][0]["name"], "ops-toolkit")
+
+        tools = (await self.client.get("/manage/tools")).json()["tools"]
+        self.assertEqual(
+            tools[0]["tools"],
+            ["tool_ops__capability_snapshot", "tool_ops__job_digest"],
+        )
+
+        capability_snapshot = json.loads(
+            await self.runtime.handlers.dispatch(
+                "tool_ops__capability_snapshot",
+                {"include_blocked": True, "limit": 5},
+            )
+        )
+        self.assertEqual(capability_snapshot["counts"]["active"], 1)
+        self.assertEqual(capability_snapshot["counts"]["total"], 1)
+        self.assertEqual(capability_snapshot["capabilities"][0]["name"], "get_report")
+        self.assertIn("0 blocked or pending review", capability_snapshot["summary"])
+
+        job_digest = json.loads(
+            await self.runtime.handlers.dispatch(
+                "tool_ops__job_digest",
+                {"limit": 5},
+            )
+        )
+        self.assertEqual(job_digest["counts"]["completed"], 1)
+        self.assertEqual(job_digest["counts"]["failed"], 1)
+        self.assertEqual(job_digest["counts"]["pending"], 1)
+        self.assertAlmostEqual(job_digest["payment_volume"]["USDC"], 0.4)
+        self.assertEqual(len(job_digest["jobs"]), 3)
+        self.assertEqual(job_digest["jobs"][0]["id"], pending_job)
+        self.assertIn("Payment volume: 0.4000 USDC.", job_digest["summary"])
+
+        agent = await self.runtime.ensure_agent_loop()
+        assert agent is not None
+        self.assertIn(
+            "tool_ops__capability_snapshot",
+            [tool.name for tool in agent._extra_tools],
+        )
+        self.assertIn(
+            "tool_ops__job_digest",
             [tool.name for tool in agent._extra_tools],
         )
 

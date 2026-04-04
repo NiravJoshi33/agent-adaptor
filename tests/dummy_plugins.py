@@ -91,3 +91,52 @@ class DummyPlatformDriver:
             "wallet": wallet,
             "driver": self.name,
         }
+
+
+class DummyToolPlugin:
+    def __init__(self, label: str = "dummy-tool") -> None:
+        self._runtime = None
+        self._label = label
+
+    @property
+    def name(self) -> str:
+        return "dummy-tool-plugin"
+
+    @property
+    def namespace(self) -> str:
+        return "tool_dummy"
+
+    @property
+    def tools(self) -> list[ToolDefinition]:
+        return [
+            ToolDefinition(
+                name="tool_dummy__echo",
+                description="Echo a labeled value through a tool plugin.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                    },
+                    "required": ["value"],
+                },
+            )
+        ]
+
+    async def initialize(self, runtime) -> None:
+        self._runtime = runtime
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def execute(self, tool_name: str, args: dict[str, object]) -> dict[str, object]:
+        if tool_name != "tool_dummy__echo":
+            raise ValueError(f"Unknown tool: {tool_name}")
+        assert self._runtime is not None
+        wallet = await self._runtime.wallet.get_address()
+        return {
+            "ok": True,
+            "tool": tool_name,
+            "value": str(args["value"]),
+            "label": self._label,
+            "wallet": wallet,
+        }

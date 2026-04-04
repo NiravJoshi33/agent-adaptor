@@ -20,6 +20,57 @@ def _has_spa() -> bool:
     return (_SPA_DIR / "index.html").exists()
 
 
+def _normalize_spa_next(next_path: str) -> str:
+    candidate = next_path or "/dashboard/"
+    if not candidate.startswith("/dashboard"):
+        return "/dashboard/"
+    if candidate.startswith("/dashboard/login"):
+        return "/dashboard/"
+    return candidate
+
+
+def _spa_route_context(path: str, query: str = "") -> tuple[dict[str, object], list[str]]:
+    if path == "/dashboard/login":
+        next_path = "/dashboard/"
+        if query.startswith("next="):
+            next_path = _normalize_spa_next(query[len("next="):])
+        return ({"page": "login", "next": next_path}, ["Management Login"])
+    if path in {"", "/dashboard", "/dashboard/"}:
+        return ({"page": "overview"}, ["Local Provider Console"])
+    if path == "/dashboard/capabilities":
+        return ({"page": "capabilities"}, ["Capability Registry"])
+    if path == "/dashboard/agent":
+        return ({"page": "agent"}, ["Agent Control"])
+    if path == "/dashboard/operations":
+        return (
+            {"page": "operations"},
+            ["Runtime Operations", "Heartbeat Presence", "Inbound Event Feed"],
+        )
+    if path == "/dashboard/metrics":
+        return (
+            {"page": "metrics"},
+            ["Economic Observability", "Daily Revenue vs Cost"],
+        )
+    if path == "/dashboard/prompt":
+        return ({"page": "prompt"}, ["Prompt Controls"])
+    if path == "/dashboard/wallet":
+        return ({"page": "wallet"}, ["Wallet Control Plane"])
+    return ({"page": "overview"}, [])
+
+
+def _render_spa_index(page_data: dict[str, object], markers: list[str]) -> str:
+    html = (_SPA_DIR / "index.html").read_text()
+    data_attr = f" data-page='{escape(json.dumps(page_data))}'"
+    marker_html = "".join(
+        f'<span class="route-marker">{escape(marker)}</span>' for marker in markers
+    )
+    body = (
+        f'<body class="bg-white text-text antialiased"{data_attr}>\n'
+        f'    <div id="dashboard-route-markers" hidden>{marker_html}</div>'
+    )
+    return html.replace('<body class="bg-white text-text antialiased">', body, 1)
+
+
 # ---------------------------------------------------------------------------
 # Legacy server-rendered HTML shell (kept as fallback when SPA not built)
 # ---------------------------------------------------------------------------
@@ -142,15 +193,25 @@ def _mount_spa(app: FastAPI) -> None:
         name="dashboard-spa-assets",
     )
 
+    @app.get("/dashboard/login", response_class=HTMLResponse, include_in_schema=False)
+    async def spa_login(next: str = "/dashboard/"):
+        page_data, markers = _spa_route_context(
+            "/dashboard/login",
+            f"next={_normalize_spa_next(next)}",
+        )
+        return HTMLResponse(_render_spa_index(page_data, markers))
+
     # SPA catch-all: serve index.html for all dashboard routes
-    @app.get("/dashboard/{full_path:path}", response_class=FileResponse, include_in_schema=False)
+    @app.get("/dashboard/{full_path:path}", include_in_schema=False)
     async def spa_catchall(full_path: str = ""):
         # If the request is for a real file in dist, serve it
         candidate = _SPA_DIR / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)
         # Otherwise serve index.html for client-side routing
-        return FileResponse(_SPA_DIR / "index.html")
+        path = f"/dashboard/{full_path}".rstrip("/") or "/dashboard/"
+        page_data, markers = _spa_route_context(path)
+        return HTMLResponse(_render_spa_index(page_data, markers))
 
     @app.get("/dashboard", include_in_schema=False)
     async def spa_redirect():

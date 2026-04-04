@@ -41,6 +41,7 @@ from agent_adapter.store.encryption import (
 )
 from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
+from agent_adapter.tool_plugins import ToolPluginRegistry, load_tool_plugins
 from agent_adapter.tools.handlers import ToolHandlers
 from agent_adapter.wallet.loader import load_wallet
 from agent_adapter.wallet.persistence import persist_wallet_keypair
@@ -309,6 +310,7 @@ class RuntimeContext:
     state: StateStore
     registry: CapabilityRegistry
     drivers: DriverRegistry
+    tool_plugins: ToolPluginRegistry
     payments: PaymentRegistry
     extensions: ExtensionRegistry
     job_engine: JobEngine
@@ -338,6 +340,7 @@ class RuntimeContext:
             "low_balance": low_balance,
             "registered_platforms": await self.list_platforms(),
             "platform_drivers": await self.list_drivers(),
+            "agent_tool_plugins": await self.list_tool_plugins(),
             "capabilities": sellable_capabilities,
             "blocked_capabilities": blocked_capabilities,
             "all_capabilities": all_capabilities,
@@ -524,6 +527,9 @@ class RuntimeContext:
 
     async def list_drivers(self) -> list[dict[str, Any]]:
         return self.drivers.list_drivers()
+
+    async def list_tool_plugins(self) -> list[dict[str, Any]]:
+        return self.tool_plugins.list_plugins()
 
     async def list_decisions(self, limit: int = 50) -> list[dict[str, Any]]:
         cursor = await self.db.conn.execute(
@@ -1172,7 +1178,8 @@ class RuntimeContext:
             system_prompt=custom_prompt if not append_to_default else DEFAULT_SYSTEM_PROMPT,
             max_tool_rounds=agent_cfg.get("max_tool_rounds", 20),
             extra_tools=self.registry.to_tool_definitions()
-            + self.drivers.to_tool_definitions(),
+            + self.drivers.to_tool_definitions()
+            + self.tool_plugins.to_tool_definitions(),
             usage_recorder=self.record_llm_usage,
         )
         self._prompt_signature = prompt_signature
@@ -1207,15 +1214,18 @@ class RuntimeContext:
 
     async def close(self) -> None:
         try:
-            await self.drivers.shutdown()
+            await self.tool_plugins.shutdown()
         finally:
             try:
-                await self.extensions.shutdown()
+                await self.drivers.shutdown()
             finally:
                 try:
-                    await self.handlers.close()
+                    await self.extensions.shutdown()
                 finally:
-                    await self.db.close()
+                    try:
+                        await self.handlers.close()
+                    finally:
+                        await self.db.close()
 
     def _read_prompt_state(self) -> tuple[Path, str, bool, tuple[str, bool, str]]:
         prompt_path = _prompt_path(self.config, self.config_path)
@@ -1279,6 +1289,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
         extensions = await load_extensions(config.get("extensions"), runtime=None)
         job_engine = JobEngine(db, extensions)
         drivers = DriverRegistry()
+        tool_plugins = ToolPluginRegistry()
 
         payments = load_payment_registry(config.get("payments"), wallet=wallet)
 
@@ -1298,6 +1309,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
             state=state,
             registry=registry,
             drivers=drivers,
+            tool_plugins=tool_plugins,
             payments=payments,
             extensions=extensions,
             job_engine=job_engine,
@@ -1309,6 +1321,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
                 job_engine=job_engine,
                 capability_registry=registry,
                 driver_registry=drivers,
+                tool_plugin_registry=tool_plugins,
                 extensions=extensions,
                 x402_http_client=x402_http_client,
                 payments=payments,
@@ -1317,6 +1330,7 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
             stale_capabilities=stale_capabilities,
         )
         runtime.handlers._whoami_fn = runtime.whoami
+        await load_tool_plugins(config.get("tools"), runtime=runtime, registry=tool_plugins)
         await load_drivers(config.get("drivers"), runtime=runtime, registry=drivers)
         for extension in extensions._extensions:
             if hasattr(extension, "initialize"):

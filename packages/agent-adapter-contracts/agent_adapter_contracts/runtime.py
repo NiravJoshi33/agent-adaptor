@@ -18,6 +18,7 @@ class RuntimeAPI(Protocol):
     state: Any
     payments: Any
     drivers: Any
+    tool_plugins: Any
     handlers: Any
     job_engine: Any
 

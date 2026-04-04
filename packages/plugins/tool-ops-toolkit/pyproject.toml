@@ -1,0 +1,14 @@
+[project]
+name = "tool-ops-toolkit"
+version = "0.1.0"
+description = "Operational summary tool plugin for Agent Adapter"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "agent-adapter-contracts",
+]
+
+[project.entry-points."agent_adapter.tools"]
+ops-toolkit = "tool_ops_toolkit:OpsToolkitPlugin"
+
+[tool.uv.sources]
+agent-adapter-contracts = { workspace = true }

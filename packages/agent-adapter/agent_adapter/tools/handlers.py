@@ -21,6 +21,7 @@ from agent_adapter.capabilities.openapi import fetch_and_parse
 from agent_adapter.capabilities.registry import CapabilityRegistry
 from agent_adapter.drivers.registry import DriverRegistry
 from agent_adapter.payments.registry import PaymentRegistry
+from agent_adapter.tool_plugins.registry import ToolPluginRegistry
 from agent_adapter.store.database import Database
 from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
@@ -49,6 +50,7 @@ class ToolHandlers:
         x402_http_client: Any = None,
         capability_registry: CapabilityRegistry | None = None,
         driver_registry: DriverRegistry | None = None,
+        tool_plugin_registry: ToolPluginRegistry | None = None,
         extensions: ExtensionRegistry | None = None,
         payments: PaymentRegistry | None = None,
         plain_http_client: httpx.AsyncClient | None = None,
@@ -62,6 +64,7 @@ class ToolHandlers:
         self._x402_http_client = x402_http_client
         self._capability_registry = capability_registry
         self._driver_registry = driver_registry
+        self._tool_plugin_registry = tool_plugin_registry
         self._extensions = extensions
         self._payments = payments
         self._owns_plain_http_client = plain_http_client is None
@@ -77,19 +80,26 @@ class ToolHandlers:
     async def dispatch(self, tool_name: str, args: dict[str, Any]) -> str:
         """Route a tool call to the right handler. Returns JSON string result."""
         handler = getattr(self, f"_handle_{tool_name}", None)
-        is_dynamic_capability = False
+        is_dynamic_handler = False
         if handler is None and tool_name.startswith("cap__"):
             handler = self._handle_capability_tool
-            is_dynamic_capability = True
+            is_dynamic_handler = True
         if handler is None and tool_name.startswith("drv_"):
             handler = self._handle_driver_tool
-            is_dynamic_capability = True
+            is_dynamic_handler = True
+        if (
+            handler is None
+            and self._tool_plugin_registry is not None
+            and self._tool_plugin_registry.resolve_tool(tool_name) is not None
+        ):
+            handler = self._handle_tool_plugin
+            is_dynamic_handler = True
         if handler is None:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
         try:
             result = (
                 await handler(tool_name, args)
-                if is_dynamic_capability
+                if is_dynamic_handler
                 else await handler(args)
             )
             # Log decision
@@ -686,6 +696,13 @@ class ToolHandlers:
         if self._driver_registry is None:
             raise ValueError("No driver registry configured")
         return await self._driver_registry.execute(tool_name, args)
+
+    async def _handle_tool_plugin(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self._tool_plugin_registry is None:
+            raise ValueError("No tool plugin registry configured")
+        return await self._tool_plugin_registry.execute(tool_name, args)
 
     async def _execute_mcp_capability(
         self, capability: Any, args: dict[str, Any], *, job_id: str = ""

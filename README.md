@@ -139,7 +139,7 @@ Core building blocks:
 - `packages/plugins/*`
   Bundled wallet, payment, and extension plugins.
 
-The plugin model has three main shapes:
+The plugin model has four main shapes:
 
 - swappable core modules
   Wallets and other required runtime slots can be replaced by alternate implementations.
@@ -147,6 +147,8 @@ The plugin model has three main shapes:
   Multiple payment adapters can be registered and resolved dynamically per payment challenge.
 - add-on extensions
   Optional plugins subscribe to runtime lifecycle events and add behavior like notifications or automation.
+- agent tool plugins
+  Optional plugins add agent-callable tools to the embedded runtime. Drivers are for platform choreography; tool plugins are for agent tools.
 
 ## Repo Layout
 
@@ -173,7 +175,7 @@ tests/
 We plan to keep the project split into two publishable layers:
 
 - `agent-adapter-contracts`
-  A lightweight contracts package with the shared interfaces and runtime event types for wallets, payments, extensions, and platform drivers.
+  A lightweight contracts package with the shared interfaces and runtime event types for wallets, payments, extensions, agent tool plugins, and platform drivers.
 - `agent-adapter`
   The full runtime package with the CLI, management API, dashboard, orchestration, stores, and built-in plugin loading.
 
@@ -184,6 +186,7 @@ The goal is to make it easy for others to build and publish:
 - wallet plugins
 - payment adapters
 - extension plugins
+- agent tool plugins
 - platform drivers
 - capability-source adapters over time
 
@@ -237,6 +240,7 @@ env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapt
 env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml prompt show
 env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml metrics summary --days 30
 env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml drivers list
+env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml tools list
 env AGENT_ADAPTER_SECRETS_ENCRYPTION_KEY=local-preview-secret uv run agent-adapter --config simulation/dashboard-preview.yaml wallet address
 ```
 

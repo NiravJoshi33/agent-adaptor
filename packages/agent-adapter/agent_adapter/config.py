@@ -96,6 +96,21 @@ def add_driver_config(path: str | Path, driver_entry: dict[str, Any]) -> dict[st
     return _write_config(p, config)
 
 
+def add_tool_plugin_config(
+    path: str | Path, tool_entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Append a tool plugin config entry if it is not already present."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config not found: {p}")
+    config = _load_raw_config(p)
+    tools = config.setdefault("tools", [])
+    if tool_entry in tools:
+        return config
+    tools.append(tool_entry)
+    return _write_config(p, config)
+
+
 def remove_driver_config(path: str | Path, index: int) -> tuple[dict[str, Any], dict[str, Any]]:
     """Remove a driver config entry by zero-based index."""
     p = Path(path)
@@ -110,6 +125,25 @@ def remove_driver_config(path: str | Path, index: int) -> tuple[dict[str, Any], 
         config["drivers"] = drivers
     else:
         config.pop("drivers", None)
+    return _write_config(p, config), removed
+
+
+def remove_tool_plugin_config(
+    path: str | Path, index: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove a tool plugin config entry by zero-based index."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config not found: {p}")
+    config = _load_raw_config(p)
+    tools = config.get("tools") or []
+    if index < 0 or index >= len(tools):
+        raise IndexError(index)
+    removed = tools.pop(index)
+    if tools:
+        config["tools"] = tools
+    else:
+        config.pop("tools", None)
     return _write_config(p, config), removed
 
 

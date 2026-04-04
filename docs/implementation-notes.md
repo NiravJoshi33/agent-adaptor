@@ -13,13 +13,17 @@ Good catch — here's the full document inline.
 
 The runtime codebase ships **interfaces and registries — not implementations**.
 
-Every plugin plugs into one of three patterns:
+Every plugin plugs into one of four patterns:
 
 | Pattern              | What it is                                                    | Core knows about it?                     |
 | -------------------- | ------------------------------------------------------------- | ---------------------------------------- |
 | **Swappable core**   | Replaces one mandatory module slot                            | Yes — abstract base lives in core        |
 | **Payment adapter**  | Registered into `PaymentRegistry`, resolved via `canHandle()` | Yes — `PaymentAdapter` ABC lives in core |
 | **Add-on extension** | Subscribes to lifecycle hooks, adds new behaviour             | No — core only emits events              |
+| **Agent tool plugin** | Registers agent-callable tools that are not platform drivers | Yes — `ToolPlugin` ABC and registry live in core |
+
+Platform drivers remain their own category in the runtime, but they are intentionally reserved for platform choreography.
+If a community package is adding agent-facing tools that are not specific to a single platform flow, it should ship as a tool plugin rather than a driver.
 
 The codebase tree reflects this:
 

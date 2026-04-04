@@ -23,6 +23,7 @@ bundled = [
     "payment-escrow",
     "payment-mpp-stripe",
     "webhook-notifier",
+    "tool-ops-toolkit",
 ]
 
 [project.scripts]
@@ -37,3 +38,4 @@ payment-x402 = { workspace = true }
 payment-escrow = { workspace = true }
 payment-mpp-stripe = { workspace = true }
 webhook-notifier = { workspace = true }
+tool-ops-toolkit = { workspace = true }

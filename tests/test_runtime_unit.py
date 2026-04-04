@@ -23,6 +23,7 @@ from agent_adapter.store.database import Database
 from agent_adapter.store.encryption import WalletDerivedSecretsBackend
 from agent_adapter.store.secrets import SecretsStore
 from agent_adapter.store.state import StateStore
+from agent_adapter.tool_plugins import ToolPluginRegistry
 from agent_adapter.jobs.engine import JobEngine
 from agent_adapter.tools.definitions import build_tool_list
 from agent_adapter.tools.handlers import ToolHandlers
@@ -368,6 +369,42 @@ class DummyDriver:
 
     async def execute(self, tool_name: str, args: dict[str, object]) -> dict[str, object]:
         return {"tool": tool_name, "args": args, "driver": self.name}
+
+
+class DummyToolPlugin:
+    def __init__(self) -> None:
+        self.initialized_with = None
+
+    @property
+    def name(self) -> str:
+        return "dummy-tool-plugin"
+
+    @property
+    def namespace(self) -> str:
+        return "tool_dummy"
+
+    @property
+    def tools(self):
+        return [
+            ToolDefinition(
+                name="tool_dummy__echo",
+                description="Echo through a dummy tool plugin",
+                input_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+            )
+        ]
+
+    async def initialize(self, runtime) -> None:
+        self.initialized_with = runtime
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def execute(self, tool_name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"tool": tool_name, "args": args, "plugin": self.name}
 
 
 class DummyRuntime:
@@ -1023,6 +1060,37 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
             result["args"]["platform_url"], "https://tasknet.example"
         )
 
+    async def test_tool_plugin_dispatches_and_builds_agent_tools(self) -> None:
+        registry = ToolPluginRegistry()
+        plugin = DummyToolPlugin()
+        await plugin.initialize({"runtime": "stub"})
+        registry.register(plugin)
+
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            tool_plugin_registry=registry,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        tools = build_tool_list(extra_tools=registry.to_tool_definitions())
+        self.assertTrue(
+            any(t["function"]["name"] == "tool_dummy__echo" for t in tools)
+        )
+
+        raw = await handlers.dispatch(
+            "tool_dummy__echo",
+            {"value": "hello"},
+        )
+        result = json.loads(raw)
+
+        self.assertEqual(result["plugin"], "dummy-tool-plugin")
+        self.assertEqual(result["tool"], "tool_dummy__echo")
+        self.assertEqual(result["args"]["value"], "hello")
+
     async def test_payment_tools_are_exposed_for_x402_and_mpp_flows(self) -> None:
         tools = build_tool_list()
         names = {tool["function"]["name"] for tool in tools}
@@ -1532,6 +1600,11 @@ class LoaderTests(unittest.TestCase):
                         "custom-driver", "tests.dummy_plugins:DummyPlatformDriver"
                     )
                 ],
+                "agent_adapter.tools": [
+                    FakeEntryPoint(
+                        "custom-tool", "tests.dummy_plugins:DummyToolPlugin"
+                    )
+                ],
             }
         )
         with patch("agent_adapter.plugins.discovery.entry_points", return_value=fake_eps):
@@ -1541,6 +1614,7 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(plugins["payment"][0]["id"], "custom-pay")
         self.assertEqual(plugins["extension"][0]["id"], "custom-ext")
         self.assertEqual(plugins["driver"][0]["id"], "custom-driver")
+        self.assertEqual(plugins["tool"][0]["id"], "custom-tool")
 
 
 class NotificationExtensionTests(unittest.IsolatedAsyncioTestCase):
