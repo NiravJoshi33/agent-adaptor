@@ -26,6 +26,7 @@ async def load_wallet(
     *,
     db: Database | None = None,
     data_dir: str | Path | None = None,
+    wallet_encryption_key: str | bytes | None = None,
 ) -> WalletPlugin:
     """Load and return the configured wallet plugin.
 
@@ -70,7 +71,12 @@ async def load_wallet(
             return SolanaRawWallet.from_base58(secret, rpc_url=rpc_url, cluster=cluster)
 
         if db is not None and data_dir is not None:
-            persisted = await load_persisted_wallet_keypair(db, Path(data_dir))
+            if not wallet_encryption_key:
+                raise ValueError(
+                    "Generated solana-raw wallets require adapter.walletEncryptionKey "
+                    "or AGENT_ADAPTER_WALLET_ENCRYPTION_KEY."
+                )
+            persisted = await load_persisted_wallet_keypair(db, wallet_encryption_key)
             if persisted is not None:
                 return SolanaRawWallet(
                     persisted,
@@ -79,7 +85,7 @@ async def load_wallet(
                 )
 
             wallet = SolanaRawWallet.generate(rpc_url=rpc_url, cluster=cluster)
-            await persist_wallet_keypair(db, Path(data_dir), wallet.keypair)
+            await persist_wallet_keypair(db, wallet_encryption_key, wallet.keypair)
             return wallet
 
         return SolanaRawWallet.generate(rpc_url=rpc_url, cluster=cluster)

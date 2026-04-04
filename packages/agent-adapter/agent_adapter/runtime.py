@@ -64,6 +64,13 @@ def _db_path(config: dict[str, Any], config_path: Path) -> Path:
     return _data_dir(config, config_path) / "adapter.db"
 
 
+def _wallet_encryption_key(config: dict[str, Any]) -> str:
+    configured = str(config.get("adapter", {}).get("walletEncryptionKey", "") or "")
+    if configured:
+        return configured
+    return os.environ.get("AGENT_ADAPTER_WALLET_ENCRYPTION_KEY", "")
+
+
 def _effective_prompt(default_prompt: str, custom_prompt: str, append_to_default: bool) -> str:
     if not custom_prompt:
         return default_prompt if append_to_default else ""
@@ -1189,69 +1196,73 @@ async def create_runtime(config_path: str | Path = "agent-adapter.yaml") -> Runt
     config = load_config(config_path)
     db = Database(_db_path(config, config_path))
     await db.connect()
+    try:
+        wallet_cfg = config.get("wallet", {})
+        wallet = await load_wallet(
+            wallet_cfg.get("provider", "solana-raw"),
+            wallet_cfg.get("config", {}),
+            db=db,
+            data_dir=_data_dir(config, config_path),
+            wallet_encryption_key=_wallet_encryption_key(config),
+        )
 
-    wallet_cfg = config.get("wallet", {})
-    wallet = await load_wallet(
-        wallet_cfg.get("provider", "solana-raw"),
-        wallet_cfg.get("config", {}),
-        db=db,
-        data_dir=_data_dir(config, config_path),
-    )
+        key_material = (
+            wallet.secret_bytes
+            if hasattr(wallet, "secret_bytes")
+            else await wallet.sign_message(b"agent-adapter-encryption-key-derivation")
+        )
+        secrets = SecretsStore(db, WalletDerivedSecretsBackend(key_material))
+        state = StateStore(db)
+        registry, source_hashes = await discover_capabilities(config)
+        await sync_capability_overlays(db, registry, source_hashes)
+        stale_capabilities = await build_stale_capability_records(db, registry)
 
-    key_material = (
-        wallet.secret_bytes
-        if hasattr(wallet, "secret_bytes")
-        else await wallet.sign_message(b"agent-adapter-encryption-key-derivation")
-    )
-    secrets = SecretsStore(db, WalletDerivedSecretsBackend(key_material))
-    state = StateStore(db)
-    registry, source_hashes = await discover_capabilities(config)
-    await sync_capability_overlays(db, registry, source_hashes)
-    stale_capabilities = await build_stale_capability_records(db, registry)
+        extensions = await load_extensions(config.get("extensions"), runtime=None)
+        job_engine = JobEngine(db, extensions)
+        drivers = DriverRegistry()
 
-    extensions = await load_extensions(config.get("extensions"), runtime=None)
-    job_engine = JobEngine(db, extensions)
-    drivers = DriverRegistry()
+        payments = load_payment_registry(config.get("payments"), wallet=wallet)
 
-    payments = load_payment_registry(config.get("payments"), wallet=wallet)
+        x402_http_client = None
+        if "x402" in payments.list() and hasattr(wallet, "keypair"):
+            from payment_x402.http_client import X402HttpClient
 
-    x402_http_client = None
-    if "x402" in payments.list() and hasattr(wallet, "keypair"):
-        from payment_x402.http_client import X402HttpClient
+            rpc_url = wallet_cfg.get("config", {}).get("rpc_url", "http://127.0.0.1:8899")
+            x402_http_client = X402HttpClient(keypair=wallet.keypair, rpc_url=rpc_url)
 
-        rpc_url = wallet_cfg.get("config", {}).get("rpc_url", "http://127.0.0.1:8899")
-        x402_http_client = X402HttpClient(keypair=wallet.keypair, rpc_url=rpc_url)
-
-    runtime = RuntimeContext(
-        config=config,
-        config_path=config_path,
-        db=db,
-        wallet=wallet,
-        secrets=secrets,
-        state=state,
-        registry=registry,
-        drivers=drivers,
-        payments=payments,
-        extensions=extensions,
-        job_engine=job_engine,
-        handlers=ToolHandlers(
+        runtime = RuntimeContext(
+            config=config,
+            config_path=config_path,
+            db=db,
             wallet=wallet,
             secrets=secrets,
             state=state,
-            db=db,
-            job_engine=job_engine,
-            capability_registry=registry,
-            driver_registry=drivers,
-            extensions=extensions,
-            x402_http_client=x402_http_client,
+            registry=registry,
+            drivers=drivers,
             payments=payments,
-        ),
-        x402_http_client=x402_http_client,
-        stale_capabilities=stale_capabilities,
-    )
-    runtime.handlers._whoami_fn = runtime.whoami
-    await load_drivers(config.get("drivers"), runtime=runtime, registry=drivers)
-    for extension in extensions._extensions:
-        if hasattr(extension, "initialize"):
-            await extension.initialize(runtime)
-    return runtime
+            extensions=extensions,
+            job_engine=job_engine,
+            handlers=ToolHandlers(
+                wallet=wallet,
+                secrets=secrets,
+                state=state,
+                db=db,
+                job_engine=job_engine,
+                capability_registry=registry,
+                driver_registry=drivers,
+                extensions=extensions,
+                x402_http_client=x402_http_client,
+                payments=payments,
+            ),
+            x402_http_client=x402_http_client,
+            stale_capabilities=stale_capabilities,
+        )
+        runtime.handlers._whoami_fn = runtime.whoami
+        await load_drivers(config.get("drivers"), runtime=runtime, registry=drivers)
+        for extension in extensions._extensions:
+            if hasattr(extension, "initialize"):
+                await extension.initialize(runtime)
+        return runtime
+    except Exception:
+        await db.close()
+        raise

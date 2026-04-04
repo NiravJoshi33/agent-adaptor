@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 import base64
+from typing import Any
 import httpx
 from unittest.mock import AsyncMock, patch
 
@@ -142,6 +143,29 @@ class FakeQueuedHttpClient:
 
     async def aclose(self) -> None:
         return None
+
+
+class TrackingMPPAdapter:
+    def __init__(self, adapter_id: str) -> None:
+        self._id = adapter_id
+        self.settle_calls: list[str] = []
+        self.refund_calls: list[str] = []
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    def can_handle(self, challenge: PaymentChallenge) -> bool:
+        return challenge.type == "mpp"
+
+    async def execute(self, challenge: PaymentChallenge, wallet: Any) -> PaymentReceipt:
+        return PaymentReceipt(protocol="mpp", extra={"adapter": self._id})
+
+    async def settle(self, session: PaymentSession) -> None:
+        self.settle_calls.append(session.adapter_id)
+
+    async def refund(self, session: PaymentSession, reason: str) -> None:
+        self.refund_calls.append(f"{session.adapter_id}:{reason}")
 
 
 class FakeRpcResponse:
@@ -900,6 +924,61 @@ class CapabilityExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(refunded["status"], "refunded")
+
+    async def test_pay_mpp_capture_and_refund_use_session_adapter_id(self) -> None:
+        primary = TrackingMPPAdapter("mpp_primary")
+        secondary = TrackingMPPAdapter("mpp_secondary")
+        payments = load_payment_registry([], wallet=self.wallet)
+        payments.register(primary)
+        payments.register(secondary)
+        handlers = ToolHandlers(
+            wallet=self.wallet,
+            secrets=self.secrets,
+            state=self.state,
+            db=self.db,
+            job_engine=self.job_engine,
+            payments=payments,
+        )
+        self.addAsyncCleanup(handlers.close)
+
+        session = {
+            "job_id": "job_mpp",
+            "adapter_id": "mpp_secondary",
+            "status": "secured",
+            "challenge": {
+                "type": "mpp",
+                "headers": {},
+                "platform": "",
+                "task_id": "",
+                "amount": 0.0,
+                "session_url": "",
+                "extra": {},
+            },
+            "receipt": {
+                "protocol": "mpp",
+                "amount": 0.0,
+                "currency": "USD",
+                "tx_signature": "",
+                "extra": {},
+            },
+        }
+
+        captured = json.loads(
+            await handlers.dispatch("pay_mpp__capture", {"session": session})
+        )
+        refunded = json.loads(
+            await handlers.dispatch(
+                "pay_mpp__refund",
+                {"session": captured, "reason": "manual refund"},
+            )
+        )
+
+        self.assertEqual(captured["adapter_id"], "mpp_secondary")
+        self.assertEqual(refunded["adapter_id"], "mpp_secondary")
+        self.assertEqual(primary.settle_calls, [])
+        self.assertEqual(primary.refund_calls, [])
+        self.assertEqual(secondary.settle_calls, ["mpp_secondary"])
+        self.assertEqual(secondary.refund_calls, ["mpp_secondary:manual refund"])
 
     async def test_dynamic_capability_tool_marks_failed_job_for_error_response(self) -> None:
         registry = CapabilityRegistry()

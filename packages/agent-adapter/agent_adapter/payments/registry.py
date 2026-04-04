@@ -18,5 +18,11 @@ class PaymentRegistry:
             f"No payment adapter can handle challenge type: {challenge.type}"
         )
 
+    def resolve_by_id(self, adapter_id: str) -> PaymentAdapter:
+        for adapter in self._adapters:
+            if adapter.id == adapter_id:
+                return adapter
+        raise ValueError(f"No payment adapter registered with id: {adapter_id}")
+
     def list(self) -> list[str]:
         return [a.id for a in self._adapters]

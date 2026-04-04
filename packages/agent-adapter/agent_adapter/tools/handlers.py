@@ -482,7 +482,10 @@ class ToolHandlers:
 
     async def _handle_pay_mpp__capture(self, args: dict) -> dict:
         session = self._payment_session_from_dict(args["session"])
-        adapter = self._require_payment_adapter(session.challenge.type)
+        adapter = self._require_payment_adapter(
+            session.challenge.type,
+            adapter_id=session.adapter_id,
+        )
         previous_status = session.status
         await adapter.settle(session)
         if session.status == previous_status:
@@ -491,7 +494,10 @@ class ToolHandlers:
 
     async def _handle_pay_mpp__refund(self, args: dict) -> dict:
         session = self._payment_session_from_dict(args["session"])
-        adapter = self._require_payment_adapter(session.challenge.type)
+        adapter = self._require_payment_adapter(
+            session.challenge.type,
+            adapter_id=session.adapter_id,
+        )
         await adapter.refund(session, str(args.get("reason", "")))
         session.status = "refunded"
         return self._serialize_payment_session(session)
@@ -582,7 +588,7 @@ class ToolHandlers:
             job_id = await self._job_engine.create(
                 capability=capability.name,
                 input_data=args,
-                payment_protocol="x402" if self._x402_http_client else "free",
+                payment_protocol="free",
                 payment_amount=self._estimate_payment_amount(capability, args),
                 payment_currency=capability.pricing.currency,
             )
@@ -832,9 +838,13 @@ class ToolHandlers:
         raw = json.dumps(payload, sort_keys=True, default=str).encode()
         return hashlib.sha256(raw).hexdigest()[:16]
 
-    def _require_payment_adapter(self, challenge_type: str) -> Any:
+    def _require_payment_adapter(
+        self, challenge_type: str, *, adapter_id: str = ""
+    ) -> Any:
         if self._payments is None:
             raise ValueError("No payment registry configured")
+        if adapter_id:
+            return self._payments.resolve_by_id(adapter_id)
         return self._payments.resolve(PaymentChallenge(type=challenge_type))
 
     def _serialize_payment_challenge(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -1109,22 +1110,51 @@ paths:
             },
         )
 
-        first_runtime = await create_runtime(self.config_path)
-        try:
-            first_address = await first_runtime.wallet.get_address()
-            await first_runtime.secrets.store("tasknet", "api_key", "secret-123")
-        finally:
-            await first_runtime.close()
+        with patch.dict(
+            os.environ,
+            {"AGENT_ADAPTER_WALLET_ENCRYPTION_KEY": "test-wallet-master-key"},
+        ):
+            first_runtime = await create_runtime(self.config_path)
+            try:
+                first_address = await first_runtime.wallet.get_address()
+                await first_runtime.secrets.store("tasknet", "api_key", "secret-123")
+            finally:
+                await first_runtime.close()
 
-        second_runtime = await create_runtime(self.config_path)
-        try:
-            second_address = await second_runtime.wallet.get_address()
-            restored = await second_runtime.secrets.retrieve("tasknet", "api_key")
-        finally:
-            await second_runtime.close()
+            second_runtime = await create_runtime(self.config_path)
+            try:
+                second_address = await second_runtime.wallet.get_address()
+                restored = await second_runtime.secrets.retrieve("tasknet", "api_key")
+            finally:
+                await second_runtime.close()
 
         self.assertEqual(second_address, first_address)
         self.assertEqual(restored, "secret-123")
+
+    async def test_generated_solana_wallet_requires_external_encryption_key(self) -> None:
+        await self.client.aclose()
+        await self.runtime.close()
+        self.tmp.cleanup()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.spec_path = self.root / "openapi.yaml"
+        self.config_path = self.root / "agent-adapter.yaml"
+        _write_openapi_spec(self.spec_path)
+        _write_config(
+            self.config_path,
+            self.spec_path,
+            wallet_provider="solana-raw",
+            wallet_config={
+                "rpc_url": "http://127.0.0.1:8899",
+                "cluster": "devnet",
+            },
+        )
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_ADAPTER_WALLET_ENCRYPTION_KEY", None)
+            with self.assertRaisesRegex(ValueError, "walletEncryptionKey"):
+                await create_runtime(self.config_path)
 
     async def test_create_runtime_initializes_extensions_with_runtime_context(self) -> None:
         await self.client.aclose()

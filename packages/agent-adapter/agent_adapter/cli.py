@@ -153,6 +153,7 @@ def _write_init_files(args: argparse.Namespace) -> dict[str, Any]:
         "adapter": {
             "name": args.adapter_name,
             "dataDir": str(data_dir),
+            "walletEncryptionKey": "${AGENT_ADAPTER_WALLET_ENCRYPTION_KEY}",
             "dashboard": {
                 "port": args.dashboard_port,
                 "bind": args.dashboard_bind,
