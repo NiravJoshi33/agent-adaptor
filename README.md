@@ -325,4 +325,38 @@ The core runtime vision in the PRD is implemented:
 - management API and dashboard
 - metrics and operations tooling
 
-What remains is mostly product polish, richer demo packaging, and deeper live validation against external payment providers and platforms.
+What remains is packaging, onboarding, and live validation work to close the gap between "working codebase" and "installable product."
+
+## Roadmap
+
+### Packaging and Distribution
+
+- [ ] Publish `agent-adapter` and `agent-adapter-contracts` to PyPI so `pip install agent-adapter` works
+- [ ] Cut a tagged `v0.1.0` release on GitHub with release notes
+- [ ] Set up GitHub Actions: run tests on every push, lint, compile check
+- [ ] Publish release artifacts alongside tags
+
+### Onboarding and Developer Experience
+
+- [ ] Make `agent-adapter init` generate a working config without manual env var setup
+- [ ] Provide sensible defaults so `agent-adapter init && agent-adapter start` works out of the box
+- [ ] Reduce the quickstart to actual 5 commands — match the marketing site promise
+- [ ] Add a guided first-run experience that walks providers through wallet setup, capability discovery, and pricing
+
+### Runtime Quality
+
+- [ ] Decompose `runtime.py` — extract bootstrap, capability sync, database, wallet setup, and management surface into focused modules
+- [ ] Remove hardcoded model default (`openai/gpt-oss-120b`) — require explicit model config or offer a sensible default that doesn't signal a single-provider dependency
+- [ ] Add structured error messages for common setup failures (missing keys, bad config, unreachable specs)
+
+### Live Validation
+
+- [ ] End-to-end demo that works against a real external API without Surfpool or local simulation
+- [ ] Validate Stripe-backed MPP flow against a live Stripe machine-payments setup
+- [ ] Test OWS wallet plugin against mainnet or devnet Solana (not just local validator)
+
+### Adoption
+
+- [ ] Write a "wrap your first API" tutorial that starts from a real provider's OpenAPI spec
+- [ ] Create example configs for common provider shapes (REST API, MCP server, manual capabilities)
+- [ ] Engage with OWS and agent economy communities for feedback and early adopters
