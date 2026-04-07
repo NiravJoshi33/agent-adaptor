@@ -1,5 +1,7 @@
 # Agent Adapter Runtime
 
+> **This repository has moved to [AGICitizens/agent-adapter](https://github.com/AGICitizens/agent-adapter).** Please use the new repo for the latest code, issues, and contributions.
+
 Turn any API or MCP server into a self-hosted economic agent.
 
 Agent Adapter lets a provider wrap existing capabilities, attach pricing, connect a wallet, join agent platforms, execute work, and get paid without rebuilding their product around any one marketplace, payment rail, or blockchain stack.
